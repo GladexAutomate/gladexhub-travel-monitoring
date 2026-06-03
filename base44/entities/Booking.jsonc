@@ -1,0 +1,138 @@
+{
+  "name": "Booking",
+  "type": "object",
+  "properties": {
+    "pnr": {
+      "type": "string",
+      "description": "Passenger Name Record"
+    },
+    "ticket_number": {
+      "type": "string",
+      "description": "Ticket number"
+    },
+    "gdx_booking_number": {
+      "type": "string",
+      "description": "GDX Booking Number"
+    },
+    "customer_name": {
+      "type": "string",
+      "description": "Customer full name"
+    },
+    "customer_email": {
+      "type": "string",
+      "description": "Customer email address"
+    },
+    "contact_number": {
+      "type": "string",
+      "description": "Customer contact number"
+    },
+    "passenger_names": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of passenger names"
+    },
+    "tour_package_name": {
+      "type": "string",
+      "description": "Name of the tour package"
+    },
+    "destination": {
+      "type": "string",
+      "description": "Travel destination"
+    },
+    "travel_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Main travel date"
+    },
+    "departure_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Departure date"
+    },
+    "departure_time": {
+      "type": "string",
+      "description": "Departure time (HH:MM format)"
+    },
+    "arrival_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Arrival date"
+    },
+    "arrival_time": {
+      "type": "string",
+      "description": "Arrival time (HH:MM format)"
+    },
+    "airline": {
+      "type": "string",
+      "description": "Airline name"
+    },
+    "flight_number": {
+      "type": "string",
+      "description": "Flight number"
+    },
+    "return_flight_number": {
+      "type": "string",
+      "description": "Return flight number"
+    },
+    "return_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Return date"
+    },
+    "return_departure_time": {
+      "type": "string",
+      "description": "Return flight departure time (HH:MM format)"
+    },
+    "return_arrival_time": {
+      "type": "string",
+      "description": "Return flight arrival time (HH:MM format)"
+    },
+    "hotel_name": {
+      "type": "string",
+      "description": "Hotel name"
+    },
+    "hotel_check_in": {
+      "type": "string",
+      "format": "date",
+      "description": "Hotel check-in date"
+    },
+    "hotel_check_out": {
+      "type": "string",
+      "format": "date",
+      "description": "Hotel check-out date"
+    },
+    "booking_status": {
+      "type": "string",
+      "enum": [
+        "confirmed",
+        "pending",
+        "cancelled",
+        "flight_changed",
+        "schedule_updated",
+        "action_needed",
+        "completed"
+      ],
+      "default": "confirmed",
+      "description": "Booking status"
+    },
+    "voucher_url": {
+      "type": "string",
+      "description": "Voucher/itinerary download link"
+    },
+    "itinerary_url": {
+      "type": "string",
+      "description": "Itinerary download link"
+    },
+    "internal_notes": {
+      "type": "string",
+      "description": "Internal admin notes - not visible to customers"
+    }
+  },
+  "required": [
+    "pnr",
+    "customer_name",
+    "customer_email"
+  ]
+}

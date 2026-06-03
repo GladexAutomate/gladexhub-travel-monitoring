@@ -1,0 +1,57 @@
+{
+  "name": "TimelineEvent",
+  "type": "object",
+  "properties": {
+    "booking_id": {
+      "type": "string",
+      "description": "Linked booking ID"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "booking_confirmed",
+        "flight_updated",
+        "hotel_voucher_released",
+        "pickup_changed",
+        "itinerary_sent",
+        "airline_advisory",
+        "schedule_changed",
+        "cancellation",
+        "general_update"
+      ],
+      "description": "Type of timeline event"
+    },
+    "title": {
+      "type": "string",
+      "description": "Event title"
+    },
+    "description": {
+      "type": "string",
+      "description": "Event description"
+    },
+    "event_date": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the event occurred"
+    },
+    "is_customer_visible": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether this event is visible to customers"
+    },
+    "is_published": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether this event is published"
+    },
+    "linked_email_id": {
+      "type": "string",
+      "description": "ID of linked email update if applicable"
+    }
+  },
+  "required": [
+    "booking_id",
+    "event_type",
+    "title"
+  ]
+}
