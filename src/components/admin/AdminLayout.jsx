@@ -1,5 +1,5 @@
 import { Outlet, Link, useLocation } from "react-router-dom";
-import { Globe, LayoutDashboard, Briefcase, Mail, Clock, Settings, LogOut, ExternalLink, Database } from "lucide-react";
+import { Globe, LayoutDashboard, Briefcase, Mail, Clock, Settings, LogOut, ExternalLink, Database, Server } from "lucide-react";
 import { base44 } from "@/api/base44Client";
 import { cn } from "@/lib/utils";
 
@@ -10,6 +10,7 @@ const navItems = [
   { path: "/admin/timeline", label: "Timeline Manager", icon: Clock },
   { path: "/admin/settings", label: "Settings", icon: Settings },
   { path: "/admin/datasource", label: "Data Source", icon: Database },
+  { path: "/admin/raw-data", label: "Raw Data", icon: Server },
 ];
 
 export default function AdminLayout() {

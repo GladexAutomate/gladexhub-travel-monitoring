@@ -19,6 +19,7 @@ import EmailUpdates from '@/pages/admin/EmailUpdates';
 import TimelineManager from '@/pages/admin/TimelineManager';
 import AdminSettings from '@/pages/admin/AdminSettings';
 import DataSourceMapping from '@/pages/admin/DataSourceMapping';
+import RawData from '@/pages/admin/RawData';
 import AdminFlightManagement from '@/pages/AdminFlightManagement';
 import EmployeeAccounts from '@/pages/EmployeeAccounts';
 import FlightTrackerLogin from '@/pages/FlightTrackerLogin';
@@ -79,6 +80,7 @@ const AuthenticatedApp = () => {
           <Route path="/admin/timeline" element={<TimelineManager />} />
           <Route path="/admin/settings" element={<AdminSettings />} />
           <Route path="/admin/datasource" element={<DataSourceMapping />} />
+          <Route path="/admin/raw-data" element={<RawData />} />
         </Route>
       </Route>
 
