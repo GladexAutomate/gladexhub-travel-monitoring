@@ -22,6 +22,7 @@ import DataSourceMapping from '@/pages/admin/DataSourceMapping';
 import AdminFlightManagement from '@/pages/AdminFlightManagement';
 import EmployeeAccounts from '@/pages/EmployeeAccounts';
 import FlightTrackerLogin from '@/pages/FlightTrackerLogin';
+import SystemDiagnostics from '@/pages/SystemDiagnostics';
 
 // Separate auth system from the base44 useAuth above — flight-tracker RBAC
 // is backed by the employeeaccount table (see src/hooks/useAuth.js), not
@@ -59,6 +60,9 @@ const AuthenticatedApp = () => {
     <Routes>
       {/* Public customer portal */}
       <Route path="/" element={<CustomerPortal />} />
+
+      {/* System diagnostics — connection tester */}
+      <Route path="/diagnostics" element={<SystemDiagnostics />} />
 
       {/* Auth routes */}
       <Route path="/login" element={<Login />} />
