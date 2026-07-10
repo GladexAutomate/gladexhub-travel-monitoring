@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 const ROLE_LABELS = {
   agent: "Agent",
   team_leader: "Team Leader",
+  hr: "HR",
   admin: "Admin",
   super_admin: "Super Admin",
 };

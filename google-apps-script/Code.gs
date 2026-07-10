@@ -44,7 +44,7 @@ const CONFIG = {
   // search format: YYYY/MM/DD) instead of the entire mailbox history, so the
   // initial backfill doesn't take days on a mailbox with years of emails.
   // Set to null to remove the cutoff and fetch full history.
-  HISTORICAL_AFTER_DATE: '2026/06/01',
+  HISTORICAL_AFTER_DATE: '2026/01/01',
   // Safety cap for the 5-minute trigger — in practice the -label filter keeps
   // each run small, this just guards against an unexpected backlog spike.
   NEW_EMAILS_MAX_THREADS: 500,
@@ -79,6 +79,20 @@ const AIRLINES = [
     detectEmailType: detectCebuPacificType_,
     parseBookingRef: parseCebuPacificBookingRef_,
     parseFlights: parseCebuPacificFlights_,
+  },
+  {
+    name: 'HK Express',
+    senderQuery: 'from:noreply@yourbooking.hkexpress.com',
+    detectEmailType: detectHKExpressType_,
+    parseBookingRef: parseHKExpressBookingRef_,
+    parseFlights: parseHKExpressFlights_,
+  },
+  {
+    name: 'Philippine Airlines',
+    senderQuery: 'from:noreply@philippineairlines.com',
+    detectEmailType: detectPALType_,
+    parseBookingRef: parsePALBookingRef_,
+    parseFlights: parsePALFlights_,
   },
 ];
 
@@ -335,7 +349,10 @@ function parseAirAsiaBookingRef_(body) {
 }
 
 function parseAirAsiaFlights_(body) {
-  // Layout (plain-text rendering of a 2-column "Original | Revised" table):
+  // TWO known layouts for a reschedule notice — AirAsia has sent both, not
+  // just one, verified against real emails:
+  //
+  // Layout A (plain-text rendering of a 2-column "Original | Revised" table):
   //   Don Mueang International Airport (DMK) to Chiang Mai International Airport (CNX)
   //   Flight Number: FD 8439
   //   Depart date: 03-Aug-2026
@@ -346,18 +363,41 @@ function parseAirAsiaFlights_(body) {
   //   Depart date: 03-Aug-2026
   //   Depart: 17:05hrs      <- REVISED time (the actual new schedule)
   //   Arrive: 18:25hrs
+  //
+  // Layout B ("URGENT: AirAsia Flight Reschedule Notice" subject, route only
+  // stated ONCE in the intro paragraph, not repeated per schedule block):
+  //   ...your AirAsia flight Z2711 from Manila Int'l (MNL) to Kalibo (KLO)
+  //   on 10 Jul, 2026 has been rescheduled...
+  //   *Original Schedule *
+  //   Flight number : Z2711
+  //   Departure Date : 10 Jul, 2026
+  //   Depart from Manila Int'l(MNL) : 09:30hrs, local time
+  //   Arrive in Kalibo (KLO) : 10:35hrs, local time
+  //   *New Schedule*
+  //   Flight number : Z2711
+  //   Departure Date : 10 Jul, 2026
+  //   Depart from Manila Int'l(MNL) : 10:00hrs, local time
+  //   Arrive in Kalibo (KLO) : 11:07hrs, local time
+  //
   // The whole block repeats once per leg, with the same flight number/route
-  // appearing in both the original and revised block. departure_time/
-  // arrival_time always hold the REVISED (current) schedule; original_*
-  // fields hold the pre-reschedule time so the admin UI can show a before/
-  // after comparison — only set when an original block was actually found
-  // and its time differs from the revised one.
+  // appearing in both the original and revised block (Layout A) or just the
+  // flight number repeating with route only stated once up top (Layout B).
+  // departure_time/arrival_time always hold the REVISED (current) schedule;
+  // original_* fields hold the pre-reschedule time so the admin UI can show
+  // a before/after comparison — only set when an original block was
+  // actually found and its time differs from the revised one.
   const flights = [];
-  const flightNoRegex = /Flight Number:\s*([A-Z]{2}\s*\d{2,4})/gi;
+  const flightNoRegex = /Flight\s*[Nn]umber\s*:\s*([A-Z]{1,2}\s*\d{2,4})/gi;
+  // Route can appear right before the flight number (Layout A, tight
+  // backward window) or much earlier in an intro paragraph (Layout B) — the
+  // wide 600-char backward window covers both without needing two regexes.
   const routeRegex = /\(([A-Z]{3})\)\s*(?:to|-|–)\s*[^(]*\(([A-Z]{3})\)/i;
-  const dateRegex = /Depart date:\s*(\d{1,2}-[A-Za-z]{3}-\d{4})/i;
-  const departRegex = /Depart:\s*(\d{1,2}:\d{2})hrs/i;
-  const arriveRegex = /Arrive:\s*(\d{1,2}:\d{2})hrs/i;
+  // Layout A: "Depart date: 03-Aug-2026". Layout B: "Departure Date : 10 Jul, 2026".
+  const dateRegex = /Depart(?:ure)? [Dd]ate\s*:\s*(\d{1,2}[-\s][A-Za-z]{3,9},?[-\s]\d{4})/i;
+  // Layout A: "Depart: 20:45hrs". Layout B: "Depart from Manila Int'l(MNL) : 09:30hrs".
+  const departRegex = /Depart(?:\s+from[^:]*)?\s*:\s*(\d{1,2}:\d{2})hrs/i;
+  // Layout A: "Arrive: 22:00hrs". Layout B: "Arrive in Kalibo (KLO) : 10:35hrs".
+  const arriveRegex = /Arrive(?:\s+in[^:]*)?\s*:\s*(\d{1,2}:\d{2})hrs/i;
 
   const allMatches = [];
   let m;
@@ -374,7 +414,7 @@ function parseAirAsiaFlights_(body) {
   });
 
   function extractLegAt(fm) {
-    const routeWindowStart = Math.max(0, fm.index - 200);
+    const routeWindowStart = Math.max(0, fm.index - 600);
     const routeWin = body.slice(routeWindowStart, fm.index);
     const routeMatch = routeWin.match(routeRegex);
 
@@ -418,6 +458,230 @@ function parseAirAsiaFlights_(body) {
   });
 
   return flights;
+}
+
+// ============================================================
+// HK Express — verified against real emails from
+// noreply@yourbooking.hkexpress.com. TWO known layouts:
+//   1. "Your HK Express Itinerary" booking confirmation — has a real
+//      flight number (UO + digits) per leg.
+//   2. "Online Check in is now open for booking XXX" — sent closer to
+//      travel date, no flight number anywhere in the email at all, just
+//      route/time/date. parseHKExpressFlights_ tries the flight-number
+//      layout first and falls back to the check-in layout if that finds
+//      nothing.
+// cancellation/reschedule wording is guessed generically in
+// detectHKExpressType_ below; if either shows up with different layout,
+// it'll land in NeedsReview instead of silently mis-parsing.
+// ============================================================
+
+function detectHKExpressType_(subject, body) {
+  const subj = subject.toLowerCase();
+  const bod = body.toLowerCase();
+  if (subj.indexOf('cancel') !== -1 || bod.indexOf('has been cancelled') !== -1) return 'cancellation';
+  if (subj.indexOf('reschedule') !== -1 || subj.indexOf('changed') !== -1) return 'reschedule';
+  if (subj.indexOf('itinerary') !== -1 || subj.indexOf('confirmation') !== -1 || subj.indexOf('check in') !== -1 || subj.indexOf('check-in') !== -1) return 'confirmation';
+  return null;
+}
+
+function parseHKExpressBookingRef_(body) {
+  // Layout: "Booking reference" label, then several blank lines (Gmail's
+  // HTML-table-to-plain-text conversion), then the code on its own line.
+  const match = body.match(/Booking reference[\s\S]{1,30}?([A-Z0-9]{5,8})\b/i);
+  return match ? match[1].toUpperCase() : null;
+}
+
+function parseHKExpressFlights_(body) {
+  // Layout per leg (each on its own line, lots of blank lines from the
+  // HTML table — Departure and Return blocks look identical structurally):
+  //   Departure
+  //   Lite
+  //   Fare Class: O
+  //   01:45
+  //   To
+  //   04:05
+  //   MNL
+  //   UO517
+  //   HKG
+  //   08 Sep, 2026, Tue
+  //   Ninoy Aquino International Airport
+  //   Terminal 3
+  //   08 Sep, 2026, Tue          <- arrival date (same day here; can differ
+  //   Hong Kong International Airport   on an overnight flight)
+  //   Terminal 1
+  // Flight number is always "UO" + digits. Origin/destination are bare
+  // 3-letter airport codes immediately before/after the flight number.
+  //
+  // Each "To" arrow between the departure/arrival time is actually a link,
+  // so Gmail's plain-text rendering turns it into "To [https://...long-url]"
+  // — strip that bracketed URL text first, or it both breaks the time regex
+  // (the gap between "To" and the arrival time balloons past any reasonable
+  // window) and pollutes the 3-letter-code search (the url path segment
+  // "HKE-newsletters" contains "HKE", a false airport-code-shaped match).
+  const cleanBody = body.replace(/\[https?:\/\/[^\]]*\]/g, '');
+  const flights = [];
+  const flightNoRegex = /\bUO\s*\d{2,4}\b/g;
+  const timeRegex = /(\d{1,2}:\d{2})[\s\S]{0,60}?To[\s\S]{0,60}?(\d{1,2}:\d{2})/i;
+  const dateRegex = /\d{1,2}\s+[A-Za-z]{3,9},?\s+\d{4}/g;
+
+  let m;
+  while ((m = flightNoRegex.exec(cleanBody)) !== null) {
+    const flightNo = m[0].toUpperCase().replace(/\s+/, '');
+    const idx = m.index;
+
+    const backWin = cleanBody.slice(Math.max(0, idx - 250), idx);
+    const fwdWin = cleanBody.slice(idx, Math.min(cleanBody.length, idx + 400));
+
+    const originMatches = backWin.match(/\b[A-Z]{3}\b/g);
+    const origin = originMatches ? originMatches[originMatches.length - 1] : null;
+
+    const destMatches = fwdWin.match(/\b[A-Z]{3}\b/g);
+    const destination = destMatches ? destMatches[0] : null;
+
+    const timeMatch = backWin.match(timeRegex);
+    const dateMatches = fwdWin.match(dateRegex);
+
+    if (!origin || !destination || !timeMatch || !dateMatches) continue;
+
+    flights.push({
+      route: origin + '-' + destination,
+      flight_no: flightNo,
+      origin: origin,
+      destination: destination,
+      departure_date: normalizeDate_(dateMatches[0]),
+      departure_time: normalizeTime_(timeMatch[1]),
+      arrival_date: normalizeDate_(dateMatches.length > 1 ? dateMatches[1] : dateMatches[0]),
+      arrival_time: normalizeTime_(timeMatch[2]),
+    });
+  }
+
+  if (flights.length > 0) return flights;
+  return parseHKExpressCheckinFlights_(cleanBody);
+}
+
+// "Online Check in is now open" layout — no flight number anywhere, just:
+//   HKG
+//   To [url]
+//   MNL
+//   17:50
+//   Friday, 12 June 2026
+//   Hong Kong International Airport
+//   Terminal 2
+//   20:10
+//   Friday, 12 June 2026
+//   Ninoy Aquino International Airport
+//   Terminal 3
+// Dates include a leading day name ("Friday, ") that normalizeDate_ can't
+// handle (it expects the day-number first), so the date regex here only
+// captures the "DD Month YYYY" part after the comma.
+function parseHKExpressCheckinFlights_(cleanBody) {
+  const flights = [];
+  const legRegex = /\b([A-Z]{3})\b\s*\n+\s*To\s*\n+\s*([A-Z]{3})\b/gi;
+  const dateRegex = /[A-Za-z]+,\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})/g;
+
+  let m;
+  while ((m = legRegex.exec(cleanBody)) !== null) {
+    const origin = m[1].toUpperCase();
+    const destination = m[2].toUpperCase();
+    const fwdWin = cleanBody.slice(m.index, Math.min(cleanBody.length, m.index + 600));
+    const times = fwdWin.match(/\d{1,2}:\d{2}/g);
+    const dates = Array.from(fwdWin.matchAll(dateRegex)).map((d) => d[1]);
+
+    if (!times || times.length < 2 || dates.length < 2) continue;
+
+    flights.push({
+      route: origin + "-" + destination,
+      flight_no: null,
+      origin: origin,
+      destination: destination,
+      departure_date: normalizeDate_(dates[0]),
+      departure_time: normalizeTime_(times[0]),
+      arrival_date: normalizeDate_(dates[1]),
+      arrival_time: normalizeTime_(times[1]),
+    });
+  }
+
+  return flights;
+}
+
+// ============================================================
+// Philippine Airlines — verified against a real "Boarding Pass" check-in
+// notification from noreply@philippineairlines.com. Very low volume from
+// this sender (1-2 emails total seen in discovery) and a different email
+// event than the booking-confirmation/reschedule/cancellation lifecycle
+// tracked for other airlines — treated as 'confirmation' anyway since it
+// carries the same route/flight/date info and there's no dedicated
+// "boarding_pass" email_type in the admin UI. If a real booking
+// confirmation or reschedule/cancellation email from this sender shows up
+// with different wording/layout, detectPALType_/parsePALFlights_ may not
+// match it — check NeedsReview.
+// ============================================================
+
+function detectPALType_(subject, body) {
+  const subj = subject.toLowerCase();
+  const bod = body.toLowerCase();
+  if (subj.indexOf('cancel') !== -1 || bod.indexOf('has been cancelled') !== -1) return 'cancellation';
+  if (subj.indexOf('reschedul') !== -1 || subj.indexOf('rebook') !== -1) return 'reschedule';
+  if (subj.indexOf('boarding pass') !== -1 || subj.indexOf('check') !== -1 || subj.indexOf('itinerary') !== -1 || subj.indexOf('confirmation') !== -1) return 'confirmation';
+  return null;
+}
+
+function parsePALBookingRef_(body) {
+  // Layout: "...checked in for your flight. *YF8I3E*" immediately followed
+  // by the literal label "BOOKING REFERENCE" on the next line.
+  const match = body.match(/\*([A-Z0-9]{5,8})\*\s*\n+\s*BOOKING REFERENCE/i);
+  return match ? match[1].toUpperCase() : null;
+}
+
+function parsePALFlights_(body) {
+  // Layout (single leg only in the verified sample — a route with a
+  // connection would need a second sample to confirm how it repeats):
+  //   MNL
+  //   MANILA NINOY AQUINO INTL
+  //   Terminal 2 > DGT
+  //   DUMAGUETE SIBULAN
+  //   PR 2547
+  //   Operated by PAL EXPRESS
+  //   DEPARTURE ARRIVAL
+  //   0605H
+  //   29 Jun 2026
+  //   Monday 0725H
+  //   29 Jun 2026
+  //   Monday
+  // Times are "HHMMH" (24hr, no colon) rather than the "H:MM AM/PM" style
+  // normalizeTime_ expects, so formatted directly here instead.
+  // "Terminal N" before the ">" is only present when the departure airport
+  // actually has a numbered terminal — smaller airports (e.g. Basco) just
+  // show "BSO...> CRK" with no "Terminal" text at all, so that part of the
+  // route pattern is optional.
+  const flights = [];
+  const routeRegex = /\b([A-Z]{3})\b[\s\S]{0,120}?(?:Terminal\s*\d*\s*)?>\s*([A-Z]{3})\b/i;
+  const flightNoRegex = /\b(PR|2P)\s*(\d{2,4})\b/i;
+  const timeRegex = /(\d{3,4})H\s*\n\s*(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})[\s\S]{0,40}?(\d{3,4})H\s*\n\s*(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})/i;
+
+  const routeMatch = body.match(routeRegex);
+  const flightNoMatch = body.match(flightNoRegex);
+  const timeMatch = body.match(timeRegex);
+
+  if (!routeMatch || !flightNoMatch || !timeMatch) return flights;
+
+  flights.push({
+    route: routeMatch[1].toUpperCase() + '-' + routeMatch[2].toUpperCase(),
+    flight_no: (flightNoMatch[1] + ' ' + flightNoMatch[2]).toUpperCase(),
+    origin: routeMatch[1].toUpperCase(),
+    destination: routeMatch[2].toUpperCase(),
+    departure_date: normalizeDate_(timeMatch[2]),
+    departure_time: formatPALTime_(timeMatch[1]),
+    arrival_date: normalizeDate_(timeMatch[4]),
+    arrival_time: formatPALTime_(timeMatch[3]),
+  });
+
+  return flights;
+}
+
+function formatPALTime_(raw) {
+  const digits = raw.padStart(4, "0");
+  return digits.slice(0, 2) + ":" + digits.slice(2);
 }
 
 // ============================================================
@@ -557,18 +821,50 @@ function debugListSubjects() {
  * to the sender you want to inspect, then run this function.
  */
 function debugLogSample() {
-  const gmailSearchFrom = 'noreplycustsupport@airasia.com'; // <- change this to inspect a different sender
-  const query = 'from:' + gmailSearchFrom + ' subject:"AirAsia Flight Reschedule Notice"';
-  let threads = GmailApp.search(query, 0, 1);
-  if (threads.length === 0) {
-    Logger.log('No booking-shaped email found for ' + gmailSearchFrom + ' — falling back to most recent email from this sender (may not be a booking email).');
-    threads = GmailApp.search('from:' + gmailSearchFrom, 0, 1);
-  }
+  const gmailSearchFrom = 'noreply@philippineairlines.com'; // <- change this to inspect a different sender
+  const threads = GmailApp.search('from:' + gmailSearchFrom, 0, 1);
   if (threads.length === 0) {
     Logger.log('No matching emails found for sender: ' + gmailSearchFrom);
     return;
   }
   const message = threads[0].getMessages()[0];
+  Logger.log('SUBJECT: ' + message.getSubject());
+  Logger.log('BODY:\n' + message.getPlainBody());
+}
+
+/**
+ * Debug helper — like debugLogSample but scoped by subject keyword instead
+ * of "most recent from this sender", for chasing a specific email type that
+ * isn't the sender's most common one (e.g. HK Express also sends "Online
+ * Check in is now open" emails, a different layout than the "Itinerary"
+ * confirmations debugLogSample would normally find first).
+ */
+function debugLogSampleBySubject() {
+  const gmailSearchFrom = 'noreply@yourbooking.hkexpress.com'; // <- change this
+  const subjectKeyword = 'Online Check in'; // <- change this
+  const threads = GmailApp.search('from:' + gmailSearchFrom + ' subject:"' + subjectKeyword + '"', 0, 1);
+  if (threads.length === 0) {
+    Logger.log('No matching emails found for sender ' + gmailSearchFrom + ' with subject containing "' + subjectKeyword + '"');
+    return;
+  }
+  const message = threads[0].getMessages()[0];
+  Logger.log('SUBJECT: ' + message.getSubject());
+  Logger.log('BODY:\n' + message.getPlainBody());
+}
+
+/**
+ * Debug helper — fetches one exact message by its Gmail message id (the
+ * bracketed id printed in runSync_'s SAVED/PARSE ERROR log lines) so a
+ * specific failing email can be inspected directly instead of re-searching
+ * and hoping to land on the same one.
+ */
+function debugLogMessageById() {
+  const messageId = '19d3d164bd93af67'; // <- change this to the id from a log line
+  const message = GmailApp.getMessageById(messageId);
+  if (!message) {
+    Logger.log('No message found for id: ' + messageId);
+    return;
+  }
   Logger.log('SUBJECT: ' + message.getSubject());
   Logger.log('BODY:\n' + message.getPlainBody());
 }

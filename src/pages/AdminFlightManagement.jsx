@@ -2,6 +2,8 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { supabaseSales } from "@/lib/supabaseSales";
+import { supabaseAutomate } from "@/lib/supabaseAutomate";
+import { supabaseFusioo } from "@/lib/supabaseFusioo";
 import { supabaseAccounts } from "@/lib/supabaseAccounts";
 import { useAuth, ADMIN_LIKE_ROLES } from "@/hooks/useAuth";
 import FlightTrackerSidebar from "@/components/FlightTrackerSidebar";
@@ -34,6 +36,7 @@ import { cn } from "@/lib/utils";
 const ROLE_LABELS = {
   agent: "Agent",
   team_leader: "Team Leader",
+  hr: "HR",
   admin: "Admin",
   super_admin: "Super Admin",
 };
@@ -104,6 +107,56 @@ async function selectInChunks(table, columns, column, values, chunkSize = 150) {
     })
   );
   return results.flat();
+}
+
+// Fusioo tables (see fusioo_sync_schema.sql) store one row per Fusioo
+// record as { id, data }, where `data` is the raw record verbatim — `id` is
+// a real top-level column (fast, plain .in() works), but every other field
+// (booking_reference_number_pnr, agent_name, etc.) only exists inside the
+// jsonb `data` blob.
+async function selectFusiooByIds(table, ids, chunkSize = 150) {
+  if (ids.length === 0) return [];
+  const results = await Promise.all(
+    chunkArray(ids, chunkSize).map(async (batch) => {
+      const { data, error } = await supabaseFusioo.from(table).select("data").in("id", batch);
+      if (error) throw error;
+      return (data || []).map((row) => row.data);
+    })
+  );
+  return results.flat();
+}
+
+// Same batching rationale as selectInChunks, but filtering on a jsonb field
+// (data->>field) instead of a real column — needs .filter() with the ->>
+// operator embedded in the column name rather than plain .in(column, ...).
+async function selectFusiooByJsonbField(table, field, values, chunkSize = 150) {
+  if (values.length === 0) return [];
+  const results = await Promise.all(
+    chunkArray(values, chunkSize).map(async (batch) => {
+      const quoted = batch.map((v) => `"${String(v).replace(/"/g, '\\"')}"`).join(",");
+      const { data, error } = await supabaseFusioo
+        .from(table)
+        .select("data")
+        .filter(`data->>${field}`, "in", `(${quoted})`);
+      if (error) throw error;
+      return (data || []).map((row) => row.data);
+    })
+  );
+  return results.flat();
+}
+
+async function selectFusiooAllRows(table, pageSize = 1000) {
+  const rows = [];
+  let from = 0;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await supabaseFusioo.from(table).select("data").range(from, from + pageSize - 1);
+    if (error) throw error;
+    rows.push(...(data || []).map((row) => row.data));
+    if (!data || data.length < pageSize) break;
+    from += pageSize;
+  }
+  return rows;
 }
 
 // Fetches every row of a table (for a handful of narrow columns, no filter),
@@ -185,7 +238,7 @@ export default function AdminFlightManagement() {
   const { data: records = [], isLoading, isFetching, isError, refetch } = useQuery({
     queryKey: ["flight_emails"],
     queryFn: async () => {
-      const { data, error } = await supabaseSales
+      const { data, error } = await supabaseAutomate
         .from("flight_emails")
         .select("*")
         .order("received_date", { ascending: false });
@@ -196,76 +249,73 @@ export default function AdminFlightManagement() {
 
   // GDX/client lookup: flight_emails only holds what the airline email says
   // (no GDX — that's Gladex's own internal reference, not something airlines
-  // include). Enrich by joining against the existing internal booking
-  // tables: booking_ref -> ticket_details (customer_last_name +
-  // booking_transactions link) -> bookings (gdx). Looked up live on every
-  // load rather than stored on flight_emails, so it reflects the current
-  // internal booking record instead of a stale snapshot.
+  // include). Enrich by joining against the Fusioo data mirror (Sales'
+  // ticket_details_b1d64ca0/bookings_6fbdd6b2 are unreachable — that
+  // project is paused — and Fusioo is the actual source those tables were
+  // synced from anyway): booking_ref -> fusioo_ticket_details
+  // (customer_last_name + booking_transactions link) -> fusioo_booking_transactions
+  // (gdx). Looked up live on every load rather than stored on flight_emails,
+  // so it reflects the current record instead of a stale snapshot.
+  //
+  // Coverage is inherently partial: agents inconsistently fill in
+  // booking_reference_number_pnr on the Fusioo Ticket Details app — many
+  // rows have a Sabre/e-ticket number there instead of the actual airline
+  // PNR, which is the only thing flight_emails.booking_ref can match
+  // against (confirmed 2026-07-10: ~11% of Airline-type tickets have a
+  // PNR-shaped value in that field). A booking_ref with no match isn't a
+  // bug — the real PNR was simply never recorded on the matching side.
   const bookingRefs = useMemo(
     () => Array.from(new Set(records.map((r) => r.booking_ref).filter(Boolean))),
     [records]
   );
 
   const { data: gdxByBookingRef = {} } = useQuery({
-    queryKey: ["flight_emails_gdx_lookup", bookingRefs],
+    queryKey: ["flight_emails_gdx_lookup_fusioo", bookingRefs],
     enabled: bookingRefs.length > 0,
     queryFn: async () => {
-      const tickets = await selectInChunks(
-        "ticket_details_b1d64ca0",
-        "booking_reference_number_pnr, customer_last_name, booking_transactions",
+      const tickets = await selectFusiooByJsonbField(
+        "fusioo_ticket_details",
         "booking_reference_number_pnr",
         bookingRefs
       );
 
+      // booking_transactions on a Fusioo ticket is an array of Fusioo record
+      // ids (usually just one) pointing straight at fusioo_booking_transactions.id
+      // — a real, always-consistent link (unlike the old Sales table's mixed
+      // record_id/gdx-number format), so no format-sniffing needed here.
       const bookingIds = Array.from(
-        new Set((tickets || []).map((t) => t.booking_transactions).filter(Boolean))
+        new Set(tickets.flatMap((t) => t.booking_transactions || []))
       );
-
-      // booking_transactions is inconsistently populated in the internal
-      // system: sometimes it's the proper bookings.record_id reference (e.g.
-      // "i62de6240d9654f189037eec340d6156a"), sometimes it's the GDX number
-      // itself stored directly (e.g. "22230"). Split by format up front and
-      // query each column separately, in chunks — a single .in() (or an
-      // .or() with both id lists duplicated) blew past the URL length limit
-      // once there were enough records (1000+ flight_emails => hundreds of
-      // unique ids => 400/414).
-      const recordIdCandidates = bookingIds.filter((id) => /^i[0-9a-f]{20,}$/i.test(id));
-      const gdxCandidates = bookingIds.filter((id) => !/^i[0-9a-f]{20,}$/i.test(id));
 
       // agent_name/name_of_agent are the same "Team Name"/"Agent Name" fields
       // shown on Fusioo's Booking Transactions app — used for RBAC filtering
-      // (team_leader sees their team's bookings, agent sees only their own)
-      // without ever calling the Fusioo API from the frontend.
-      const bookingColumns = "record_id, gdx, lead_name, mobile_1, email_1, agent_name, name_of_agent";
-      const [recordIdRows, gdxRows] = await Promise.all([
-        selectInChunks("bookings_6fbdd6b2", bookingColumns, "record_id", recordIdCandidates),
-        selectInChunks("bookings_6fbdd6b2", bookingColumns, "gdx", gdxCandidates),
-      ]);
-      const bookingsByRecordId = Object.fromEntries(recordIdRows.map((b) => [b.record_id, b]));
-      const bookingsByGdx = Object.fromEntries(gdxRows.map((b) => [String(b.gdx), b]));
+      // (team_leader sees their team's bookings, agent sees only their own).
+      // Both are stored as single-element arrays on the Fusioo record.
+      const bookingRows = await selectFusiooByIds("fusioo_booking_transactions", bookingIds);
+      const bookingsById = Object.fromEntries(bookingRows.map((b) => [b.id, b]));
 
       const lookup = {};
-      (tickets || []).forEach((t) => {
-        const booking = bookingsByRecordId[t.booking_transactions] || bookingsByGdx[String(t.booking_transactions)];
+      tickets.forEach((t) => {
+        const bookingId = (t.booking_transactions || [])[0] || null;
+        const booking = bookingId ? bookingsById[bookingId] : null;
         // developer-only diagnostics for why a booking_ref did or didn't
         // resolve to a GDX record — see the debug reason labels below.
         const debug = {
-          reason: !t.booking_transactions ? "NO_BOOKING_LINK" : !booking ? "BROKEN_LINK" : "OK",
-          rawBookingTransactions: t.booking_transactions || null,
-          matchedVia: booking ? (bookingsByRecordId[t.booking_transactions] ? "record_id" : "gdx") : null,
-          bookingRecordId: booking?.record_id ?? null,
+          reason: !bookingId ? "NO_BOOKING_LINK" : !booking ? "BROKEN_LINK" : "OK",
+          rawBookingTransactions: bookingId,
+          bookingRecordId: booking?.id ?? null,
         };
         const candidate = {
           gdx: booking?.gdx ?? null,
           clientName: booking?.lead_name || t.customer_last_name || null,
           mobile: booking?.mobile_1 || null,
           email: booking?.email_1 || null,
-          teamName: booking?.agent_name || null,
-          agentName: booking?.name_of_agent || null,
+          teamName: (booking?.agent_name || [])[0] || null,
+          agentName: (booking?.name_of_agent || [])[0] || null,
           debug,
         };
         const existing = lookup[t.booking_reference_number_pnr];
-        // More than one ticket_details row can share the same PNR (duplicate
+        // More than one ticket row can share the same PNR (duplicate
         // entries, or a row whose booking_transactions link is missing/
         // malformed). Keep whichever one actually resolves to a GDX instead
         // of letting a later blank row silently overwrite a working match.
@@ -274,11 +324,11 @@ export default function AdminFlightManagement() {
         }
       });
 
-      // booking_refs with no ticket_details row at all never enter the loop
-      // above, so they'd otherwise be missing from the lookup entirely
-      // (which is fine for the "—" display, but leaves developer diagnostics
-      // with nothing to point to). Fill those in explicitly.
-      const ticketedRefs = new Set((tickets || []).map((t) => t.booking_reference_number_pnr));
+      // booking_refs with no ticket row at all never enter the loop above,
+      // so they'd otherwise be missing from the lookup entirely (which is
+      // fine for the "—" display, but leaves developer diagnostics with
+      // nothing to point to). Fill those in explicitly.
+      const ticketedRefs = new Set(tickets.map((t) => t.booking_reference_number_pnr));
       bookingRefs.forEach((ref) => {
         if (!ticketedRefs.has(ref) && !lookup[ref]) {
           lookup[ref] = {
@@ -288,7 +338,7 @@ export default function AdminFlightManagement() {
             email: null,
             teamName: null,
             agentName: null,
-            debug: { reason: "NO_TICKET", rawBookingTransactions: null, matchedVia: null, bookingRecordId: null },
+            debug: { reason: "NO_TICKET", rawBookingTransactions: null, bookingRecordId: null },
           };
         }
       });
@@ -306,21 +356,21 @@ export default function AdminFlightManagement() {
   // per-person — the same agent's bookings can carry different team tags
   // depending on who happened to process each one. An agent's real team is
   // therefore whichever tag is the MAJORITY across ALL of their bookings —
-  // computed company-wide (the full bookings_6fbdd6b2 table), not just the
-  // bookings tied to already-fetched flight_emails, since that subset can be
-  // small/skewed for an agent with few linked emails and give the wrong
-  // majority. Used for the team_leader RBAC boundary below and for the
-  // admin/developer Team filter, so both agree on who's on which team.
+  // computed company-wide (the full fusioo_booking_transactions mirror, not
+  // just the bookings tied to already-fetched flight_emails, since that
+  // subset can be small/skewed for an agent with few linked emails and give
+  // the wrong majority. Used for the team_leader RBAC boundary below and for
+  // the admin/developer Team filter, so both agree on who's on which team.
   const { data: agentPrimaryTeam = {} } = useQuery({
-    queryKey: ["bookings_agent_team_roster"],
+    queryKey: ["fusioo_agent_team_roster"],
     enabled: groupByAgent,
     staleTime: 30 * 60 * 1000,
     queryFn: async () => {
-      const rows = await selectAllRows("bookings_6fbdd6b2", "agent_name, name_of_agent");
+      const rows = await selectFusiooAllRows("fusioo_booking_transactions");
       const counts = {};
       rows.forEach((b) => {
-        const agent = b.name_of_agent?.trim();
-        const team = b.agent_name?.trim();
+        const agent = ((b.name_of_agent || [])[0] || "").trim();
+        const team = ((b.agent_name || [])[0] || "").trim();
         if (!agent || !team) return;
         counts[agent] = counts[agent] || {};
         counts[agent][team] = (counts[agent][team] || 0) + 1;
@@ -335,8 +385,8 @@ export default function AdminFlightManagement() {
 
   // RBAC boundary — applied before the user-facing filters below, since this
   // is access control, not a togglable preference. Matched against
-  // agent_name (team)/name_of_agent (person) from bookings_6fbdd6b2, joined
-  // above — no Fusioo API call involved.
+  // agent_name (team)/name_of_agent (person) from the Fusioo mirror, joined
+  // above — no live Fusioo API call from the frontend.
   const accessScoped = useMemo(() => {
     if (!user) return [];
     if (ADMIN_LIKE_ROLES.includes(user.role)) return records;
