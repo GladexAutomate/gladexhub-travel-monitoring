@@ -66,9 +66,11 @@ Deno.serve(async (req) => {
     }
 
     // The API only returns active employees — when someone becomes inactive
-    // they disappear from the response entirely. Instead of delete-all-then-
-    // recreate (which would lose their record), we upsert by email and mark
-    // any previously-known employee who's absent from this sync as inactive.
+    // they disappear from the response entirely. We upsert by email and
+    // delete any cached record that's absent from this sync. A deleted
+    // record means validateSession returns valid:false (kicking them out
+    // of any active session), and employeeLogin checks the API directly so
+    // they can't log back in.
     const existing = await base44.asServiceRole.entities.SyncedEmployee.list();
     const existingByEmail = {};
     existing.forEach((e) => { existingByEmail[e.email] = e; });
@@ -89,7 +91,7 @@ Deno.serve(async (req) => {
         department: a.department || a.job_title || '',
         role: a.role || '',
         team_name: a.team_name || '',
-        is_active: (a.status || a.is_active) === 'active' || a.is_active === true,
+        is_active: true,
       };
 
       const existingRec = existingByEmail[email];
@@ -100,11 +102,10 @@ Deno.serve(async (req) => {
       }
     });
 
-    // Mark any existing employee absent from this API response as inactive.
-    let deactivatedCount = 0;
-    const toDeactivate = Object.values(existingByEmail)
-      .filter((e) => !apiEmails.has(e.email) && e.is_active !== false)
-      .map((e) => { deactivatedCount++; return { id: e.id, is_active: false }; });
+    // Delete any cached employee no longer in the API response (deactivated).
+    const staleIds = Object.values(existingByEmail)
+      .filter((e) => !apiEmails.has(e.email))
+      .map((e) => e.id);
 
     if (toCreate.length > 0) {
       await base44.asServiceRole.entities.SyncedEmployee.bulkCreate(toCreate);
@@ -112,15 +113,15 @@ Deno.serve(async (req) => {
     if (toUpdate.length > 0) {
       await base44.asServiceRole.entities.SyncedEmployee.bulkUpdate(toUpdate);
     }
-    if (toDeactivate.length > 0) {
-      await base44.asServiceRole.entities.SyncedEmployee.bulkUpdate(toDeactivate);
+    if (staleIds.length > 0) {
+      await base44.asServiceRole.entities.SyncedEmployee.deleteMany({ id: { $in: staleIds } });
     }
 
     return Response.json({
       synced: list.length,
       created: toCreate.length,
       updated: toUpdate.length,
-      deactivated: deactivatedCount,
+      deleted: staleIds.length,
     });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
