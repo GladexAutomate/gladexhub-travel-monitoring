@@ -1,9 +1,10 @@
 import { Toaster } from "@/components/ui/toaster"
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClientInstance } from '@/lib/query-client'
-import { BrowserRouter as Router, Route, Routes, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Route, Routes, Navigate, Outlet } from 'react-router-dom';
 import PageNotFound from './lib/PageNotFound';
 import { AuthProvider, useAuth } from '@/lib/AuthContext';
+import { useAuth as useFlightTrackerAuth } from '@/hooks/useAuth';
 import UserNotRegisteredError from '@/components/UserNotRegisteredError';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import Login from '@/pages/Login';
@@ -18,6 +19,21 @@ import EmailUpdates from '@/pages/admin/EmailUpdates';
 import TimelineManager from '@/pages/admin/TimelineManager';
 import AdminSettings from '@/pages/admin/AdminSettings';
 import DataSourceMapping from '@/pages/admin/DataSourceMapping';
+import AdminFlightManagement from '@/pages/AdminFlightManagement';
+import EmployeeAccounts from '@/pages/EmployeeAccounts';
+import FlightTrackerLogin from '@/pages/FlightTrackerLogin';
+
+// Separate auth system from the base44 useAuth above — flight-tracker RBAC
+// is backed by the employeeaccount table (see src/hooks/useAuth.js), not
+// base44. Gates /admin/flight-tracker independently of the base44
+// ProtectedRoute block.
+function FlightTrackerAuthGuard() {
+  const { isAuthenticated } = useFlightTrackerAuth();
+  if (!isAuthenticated) {
+    return <Navigate to="/admin/flight-tracker-login" replace />;
+  }
+  return <Outlet />;
+}
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
@@ -60,6 +76,16 @@ const AuthenticatedApp = () => {
           <Route path="/admin/settings" element={<AdminSettings />} />
           <Route path="/admin/datasource" element={<DataSourceMapping />} />
         </Route>
+      </Route>
+
+      {/* Flight Tracker — own login/RBAC (employeeaccount table), separate
+          from base44's ProtectedRoute above. */}
+      <Route path="/admin/flight-tracker-login" element={<FlightTrackerLogin />} />
+      <Route element={<FlightTrackerAuthGuard />}>
+        <Route path="/admin/flight-tracker" element={<AdminFlightManagement />} />
+        {/* Developer-only — EmployeeAccounts itself redirects non-developers
+            back to /admin/flight-tracker; this guard only checks login. */}
+        <Route path="/admin/accounts" element={<EmployeeAccounts />} />
       </Route>
 
       <Route path="*" element={<PageNotFound />} />
