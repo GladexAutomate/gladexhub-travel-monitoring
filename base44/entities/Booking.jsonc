@@ -1,0 +1,58 @@
+{
+  "name": "Booking",
+  "type": "object",
+  "properties": {
+    "passenger_name": {
+      "type": "string"
+    },
+    "passenger_email": {
+      "type": "string"
+    },
+    "flight_number": {
+      "type": "string"
+    },
+    "airline": {
+      "type": "string"
+    },
+    "origin": {
+      "type": "string"
+    },
+    "destination": {
+      "type": "string"
+    },
+    "departure_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "return_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "booking_status": {
+      "type": "string",
+      "enum": [
+        "Confirmed",
+        "Delayed",
+        "Cancelled",
+        "Completed"
+      ],
+      "default": "Confirmed"
+    },
+    "seat_info": {
+      "type": "string"
+    },
+    "gate": {
+      "type": "string"
+    },
+    "status_notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "passenger_name",
+    "flight_number",
+    "origin",
+    "destination",
+    "departure_date"
+  ]
+}
