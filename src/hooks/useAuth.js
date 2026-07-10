@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { base44 } from '@/api/base44Client';
 
 const STORAGE_KEY = 'gladex_flight_tracker_user';
@@ -19,6 +20,7 @@ function readStoredUser() {
 
 export function useAuth() {
   const [user, setUser] = useState(readStoredUser);
+  const navigate = useNavigate();
 
   useEffect(() => {
     // Keep in sync if another tab logs in/out.
@@ -43,7 +45,7 @@ export function useAuth() {
         if (response.data?.valid === false) {
           localStorage.removeItem(STORAGE_KEY);
           setUser(null);
-          window.location.href = '/admin/flight-tracker-login';
+          navigate('/admin/flight-tracker-login', { replace: true });
         }
       } catch {
         // Network errors shouldn't log the user out.
