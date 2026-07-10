@@ -1,0 +1,62 @@
+{
+  "name": "EmailUpdate",
+  "type": "object",
+  "properties": {
+    "email_subject": {
+      "type": "string",
+      "description": "Email subject line"
+    },
+    "sender": {
+      "type": "string",
+      "description": "Sender email address"
+    },
+    "received_date": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Date email was received"
+    },
+    "email_body": {
+      "type": "string",
+      "description": "Full email body text"
+    },
+    "detected_pnr": {
+      "type": "string",
+      "description": "PNR detected from email"
+    },
+    "detected_ticket_number": {
+      "type": "string",
+      "description": "Ticket number detected from email"
+    },
+    "detected_flight_number": {
+      "type": "string",
+      "description": "Flight number detected from email"
+    },
+    "detected_passenger_name": {
+      "type": "string",
+      "description": "Passenger name detected from email"
+    },
+    "match_status": {
+      "type": "string",
+      "enum": [
+        "matched",
+        "possible_match",
+        "unmatched"
+      ],
+      "default": "unmatched",
+      "description": "Email matching status"
+    },
+    "linked_booking_id": {
+      "type": "string",
+      "description": "ID of the linked booking"
+    },
+    "is_customer_visible": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether this update is visible to customers"
+    }
+  },
+  "required": [
+    "email_subject",
+    "sender"
+  ]
+}

@@ -1,0 +1,162 @@
+{
+  "name": "DataSourceMapping",
+  "type": "object",
+  "properties": {
+    "booking_table": {
+      "type": "string",
+      "default": "bookings_6fbdd6b2"
+    },
+    "booking_primary_field": {
+      "type": "string",
+      "default": "gdx"
+    },
+    "booking_secondary_field": {
+      "type": "string",
+      "default": "booking_reference_number_pnr"
+    },
+    "booking_third_field": {
+      "type": "string",
+      "default": "eticket"
+    },
+    "booking_verification_field": {
+      "type": "string",
+      "default": "customer_last_name"
+    },
+    "ticket_table": {
+      "type": "string",
+      "default": "ticket_details_b1d64ca0"
+    },
+    "ticket_pnr_column": {
+      "type": "string",
+      "default": "booking_reference_number_pnr"
+    },
+    "ticket_eticket_column": {
+      "type": "string",
+      "default": "eticket"
+    },
+    "ticket_last_name_column": {
+      "type": "string",
+      "default": "customer_last_name"
+    },
+    "hotel_table": {
+      "type": "string",
+      "default": "hotel_details_a2f30717"
+    },
+    "hotel_stay_from_column": {
+      "type": "string",
+      "default": "stay_date_from"
+    },
+    "hotel_stay_to_column": {
+      "type": "string",
+      "default": "stay_date_to"
+    },
+    "hotel_name_column": {
+      "type": "string",
+      "default": "other_hotel"
+    },
+    "hotel_room_type_column": {
+      "type": "string",
+      "default": "room_type"
+    },
+    "hotel_requests_column": {
+      "type": "string",
+      "default": "hotel_requests"
+    },
+    "tour_table": {
+      "type": "string",
+      "default": "tour_details_2bf757ca"
+    },
+    "tour_name_column": {
+      "type": "string",
+      "default": "tour_name"
+    },
+    "tour_date_column": {
+      "type": "string",
+      "default": "tour_date"
+    },
+    "tour_supplier_column": {
+      "type": "string",
+      "default": "tour_supplier"
+    },
+    "tour_requests_column": {
+      "type": "string",
+      "default": "tour_requests"
+    },
+    "transfer_table": {
+      "type": "string",
+      "default": "transfer_details_b9a92c90"
+    },
+    "transfer_type_column": {
+      "type": "string",
+      "default": "transfer_type"
+    },
+    "transfer_supplier_column": {
+      "type": "string",
+      "default": "supplier_name"
+    },
+    "transfer_arrival_date_column": {
+      "type": "string",
+      "default": "transfer_date_arrival"
+    },
+    "transfer_departure_date_column": {
+      "type": "string",
+      "default": "transfer_date_departure"
+    },
+    "relationship_key": {
+      "type": "string",
+      "enum": [
+        "id",
+        "record_id",
+        "dashboard_id",
+        "gdx",
+        "booking_id"
+      ],
+      "default": "gdx"
+    },
+    "email_priority_1": {
+      "type": "string",
+      "default": "PNR"
+    },
+    "email_priority_2": {
+      "type": "string",
+      "default": "E-ticket"
+    },
+    "email_priority_3": {
+      "type": "string",
+      "default": "GDX"
+    },
+    "email_priority_4": {
+      "type": "string",
+      "default": "Customer Last Name + Travel Date"
+    },
+    "visibility_booking_summary": {
+      "type": "boolean",
+      "default": true
+    },
+    "visibility_flight_details": {
+      "type": "boolean",
+      "default": true
+    },
+    "visibility_hotel_details": {
+      "type": "boolean",
+      "default": true
+    },
+    "visibility_tour_details": {
+      "type": "boolean",
+      "default": true
+    },
+    "visibility_transfer_details": {
+      "type": "boolean",
+      "default": true
+    },
+    "visibility_documents": {
+      "type": "boolean",
+      "default": true
+    },
+    "visibility_timeline": {
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "required": []
+}
