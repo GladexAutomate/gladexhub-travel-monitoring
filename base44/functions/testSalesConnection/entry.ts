@@ -15,34 +15,31 @@ Deno.serve(async (req) => {
       }, { status: 500 });
     }
 
-    // Try common table names to find what exists
-    const candidates = [
-      'bookings_6fbdd6b2', 'bookings', 'ticket_details_b1d64ca0',
-      'ticket_details', 'tickets', 'flight_emails',
-      'hotel_details_a2f30717', 'hotel_details', 'tour_details_2bf757ca',
-      'tour_details', 'transfer_details_b9a92c90', 'transfer_details',
-      'customer_bookings', 'sales', 'orders'
+    // Test the actual table names from the dashboard + fetch a sample row
+    const tables = [
+      'fusioo_booking_transactions',
+      'fusioo_hotel_details',
+      'fusioo_ticket_details',
+      'fusioo_tour_details',
+      'fusioo_transfer_details',
     ];
 
     const results = [];
-    for (const table of candidates) {
+    for (const table of tables) {
       const r = await fetch(`${url}/rest/v1/${table}?select=*&limit=1`, {
         headers: { apikey: key, Authorization: `Bearer ${key}` },
       });
+      const body = await r.text();
       results.push({
         table,
         status: r.status,
-        exists: r.status !== 404,
+        ok: r.ok,
+        sample: r.ok ? body.slice(0, 300) : null,
+        error: !r.ok ? body.slice(0, 200) : null,
       });
     }
 
-    const found = results.filter((r) => r.exists).map((r) => r.table);
-
-    return Response.json({
-      url,
-      foundTables: found,
-      allResults: results,
-    });
+    return Response.json({ url, results });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }
