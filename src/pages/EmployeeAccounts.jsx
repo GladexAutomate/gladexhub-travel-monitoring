@@ -1,6 +1,6 @@
 import { Navigate } from "react-router-dom";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { supabaseAccounts } from "@/lib/supabaseAccounts";
+import { useQuery } from "@tanstack/react-query";
+import { base44 } from "@/api/base44Client";
 import { useAuth } from "@/hooks/useAuth";
 import FlightTrackerSidebar from "@/components/FlightTrackerSidebar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,30 +20,17 @@ const ROLE_LABELS = {
 
 export default function EmployeeAccounts() {
   const { user } = useAuth();
-  const queryClient = useQueryClient();
-
   const { data: accounts = [], isLoading, isFetching, isError, refetch } = useQuery({
     queryKey: ["admin_accounts_list"],
     queryFn: async () => {
-      const { data, error } = await supabaseAccounts
-        .from("admin_accounts")
-        .select("id, full_name, employee_code, department, role, is_active")
-        .order("employee_code", { ascending: true });
-      if (error) throw error;
-      return data ?? [];
+      const response = await base44.functions.invoke('employeeList', {
+        requesterEmail: user?.email,
+      });
+      return (response.data?.accounts || []).sort((a, b) =>
+        (a.employee_code || "").localeCompare(b.employee_code || "")
+      );
     },
     enabled: user?.role === "super_admin",
-  });
-
-  const toggleActive = useMutation({
-    mutationFn: async ({ id, is_active }) => {
-      const { error } = await supabaseAccounts
-        .from("admin_accounts")
-        .update({ is_active })
-        .eq("id", id);
-      if (error) throw error;
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin_accounts_list"] }),
   });
 
   if (user?.role !== "super_admin") {
@@ -89,27 +76,26 @@ export default function EmployeeAccounts() {
                     <TableHead>Department</TableHead>
                     <TableHead>Role</TableHead>
                     <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Action</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {isLoading && (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">
+                      <TableCell colSpan={5} className="text-center py-10 text-muted-foreground">
                         Loading accounts…
                       </TableCell>
                     </TableRow>
                   )}
                   {isError && !isLoading && (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center py-10 text-red-600">
+                      <TableCell colSpan={5} className="text-center py-10 text-red-600">
                         Failed to load accounts.
                       </TableCell>
                     </TableRow>
                   )}
                   {!isLoading && !isError && accounts.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">
+                      <TableCell colSpan={5} className="text-center py-10 text-muted-foreground">
                         No accounts found.
                       </TableCell>
                     </TableRow>
@@ -125,18 +111,8 @@ export default function EmployeeAccounts() {
                           <Badge className="bg-emerald-100 text-emerald-700 border border-emerald-200">Active</Badge>
                         ) : (
                           <Badge className="bg-muted text-muted-foreground border border-border">Inactive</Badge>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Button
-                          size="sm"
-                          variant={account.is_active ? "outline" : "default"}
-                          disabled={toggleActive.isPending}
-                          onClick={() => toggleActive.mutate({ id: account.id, is_active: !account.is_active })}
-                        >
-                          {account.is_active ? "Deactivate" : "Activate"}
-                        </Button>
-                      </TableCell>
+                          )}
+                          </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

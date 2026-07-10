@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { supabaseAccounts } from '@/lib/supabaseAccounts';
 import { supabaseSales } from '@/lib/supabaseSales';
 import { supabaseFusioo } from '@/lib/supabaseFusioo';
 import { supabaseAutomate } from '@/lib/supabaseAutomate';
@@ -7,7 +6,6 @@ import { CheckCircle2, XCircle, Loader2, ArrowLeft } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 const TESTS = [
-  { label: 'Accounts (employee login)', client: supabaseAccounts, table: 'admin_accounts', envVars: ['VITE_ACCOUNTS_SUPABASE_URL', 'VITE_ACCOUNTS_SUPABASE_ANON_KEY'] },
   { label: 'Sales (bookings & tickets)', client: supabaseSales, table: 'bookings_6fbdd6b2', envVars: ['VITE_SALES_SUPABASE_URL', 'VITE_SALES_SUPABASE_ANON_KEY'] },
   { label: 'Fusioo (agent/team mirror)', client: supabaseFusioo, table: 'bookings_6fbdd6b2', envVars: ['VITE_FUSIOO_SUPABASE_URL', 'VITE_FUSIOO_SUPABASE_ANON_KEY'] },
   { label: 'Automate (flight emails)', client: supabaseAutomate, table: 'flight_emails', envVars: ['VITE_AUTOMATE_SUPABASE_URL', 'VITE_AUTOMATE_SUPABASE_ANON_KEY'] },

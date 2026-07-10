@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { supabaseSales } from "@/lib/supabaseSales";
 import { supabaseAutomate } from "@/lib/supabaseAutomate";
 import { supabaseFusioo } from "@/lib/supabaseFusioo";
-import { supabaseAccounts } from "@/lib/supabaseAccounts";
+import { base44 } from "@/api/base44Client";
 import { useAuth, ADMIN_LIKE_ROLES } from "@/hooks/useAuth";
 import FlightTrackerSidebar from "@/components/FlightTrackerSidebar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -537,12 +537,10 @@ export default function AdminFlightManagement() {
     queryKey: ["admin_accounts_hierarchy"],
     enabled: groupByAgent,
     queryFn: async () => {
-      const { data, error } = await supabaseAccounts
-        .from("admin_accounts")
-        .select("full_name, role, team_name")
-        .eq("role", "team_leader");
-      if (error) throw error;
-      return data ?? [];
+      const response = await base44.functions.invoke('employeeList', {
+        requesterEmail: user?.email,
+      });
+      return (response.data?.accounts || []).filter((e) => e.role === 'team_leader');
     },
   });
 
