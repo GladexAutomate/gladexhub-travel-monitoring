@@ -1,60 +1,39 @@
+import { createClientFromRequest } from 'npm:@base44/sdk@0.8.31';
+
+// Returns the employee list from the synced cache (not the API directly),
+// so it's fast and doesn't expose the API key or password hashes.
+// Permission-checked: only admin/super_admin/team_leader can call it.
 Deno.serve(async (req) => {
   try {
+    const base44 = createClientFromRequest(req);
     const { requesterEmail } = await req.json();
 
-    const apiUrl = Deno.env.get("ACCOUNTS_API_URL");
-    const apiKey = Deno.env.get("ACCOUNTS_API_KEY");
-
-    if (!apiUrl || !apiKey) {
-      return Response.json(
-        { error: 'Server configuration error: missing API credentials' },
-        { status: 500 }
-      );
+    const requesterEmailLower = (requesterEmail || '').trim().toLowerCase();
+    if (!requesterEmailLower) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const response = await fetch(apiUrl, {
-      headers: { 'x-api-key': apiKey },
+    const requesterRows = await base44.asServiceRole.entities.SyncedEmployee.filter({
+      email: requesterEmailLower,
     });
 
-    if (!response.ok) {
-      return Response.json(
-        { error: 'Failed to reach accounts service' },
-        { status: 502 }
-      );
-    }
-
-    const accounts = await response.json();
-    const list = Array.isArray(accounts) ? accounts : (accounts.data || []);
-
-    // Verify the requester is authorized to list accounts.
-    const requesterEmailLower = (requesterEmail || '').trim().toLowerCase();
-    const requester = list.find(
-      (a) => (a.email || '').toLowerCase() === requesterEmailLower
-    );
-
+    const requester = requesterRows[0];
     if (!requester) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    if (requester.is_active === false) {
+    if (!requester.is_active) {
       return Response.json({ error: 'Account deactivated' }, { status: 403 });
     }
 
     const allowedRoles = ['admin', 'super_admin', 'team_leader'];
     if (!allowedRoles.includes(requester.role)) {
-      return Response.json(
-        { error: 'Insufficient permissions' },
-        { status: 403 }
-      );
+      return Response.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
 
-    // Strip password fields before returning.
-    const safe = list.map((a) => {
-      const { password_hash, password, ...rest } = a;
-      return rest;
-    });
+    const accounts = await base44.asServiceRole.entities.SyncedEmployee.list();
 
-    return Response.json({ accounts: safe });
+    return Response.json({ accounts });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }

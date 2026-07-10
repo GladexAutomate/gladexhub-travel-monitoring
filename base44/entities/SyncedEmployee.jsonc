@@ -1,0 +1,38 @@
+{
+  "name": "SyncedEmployee",
+  "type": "object",
+  "properties": {
+    "email": {
+      "type": "string",
+      "description": "Employee email address (lowercase)"
+    },
+    "employee_code": {
+      "type": "string",
+      "description": "Employee code"
+    },
+    "full_name": {
+      "type": "string",
+      "description": "Employee full name"
+    },
+    "department": {
+      "type": "string",
+      "description": "Department"
+    },
+    "role": {
+      "type": "string",
+      "description": "Account role"
+    },
+    "team_name": {
+      "type": "string",
+      "description": "Team name"
+    },
+    "is_active": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether the account is active"
+    }
+  },
+  "required": [
+    "email"
+  ]
+}

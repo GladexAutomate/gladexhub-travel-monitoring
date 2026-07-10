@@ -1,0 +1,45 @@
+{
+  "description": "Fetches the latest employee list from the accounts API every 5 minutes and updates the SyncedEmployee cache. Runs entirely on the backend \u2014 no frontend refresh needed.",
+  "definition": {
+    "document": {
+      "dsl": "1.0.0",
+      "name": "sync_employee_accounts",
+      "version": "1.0",
+      "namespace": "base44"
+    },
+    "do": [
+      {
+        "sync_accounts": {
+          "call": "invoke_backend_function",
+          "with": {
+            "function_name": "syncEmployeeAccounts",
+            "args": {}
+          },
+          "then": "end",
+          "x-base44": {
+            "title": "Sync employee accounts",
+            "description": "Refresh from API"
+          }
+        }
+      }
+    ]
+  },
+  "trigger": {
+    "condition": null,
+    "config": {
+      "trigger_type": "scheduled",
+      "events": [],
+      "schedule_mode": "recurring",
+      "cron_expression": "*/5 * * * *",
+      "one_time_date": null,
+      "timezone": "Asia/Taipei",
+      "interval_value": null,
+      "interval_unit": null,
+      "interval_anchor": null,
+      "ends_type": "never",
+      "ends_on_date": null,
+      "ends_after_count": null
+    }
+  },
+  "name": "Sync Employee Accounts"
+}

@@ -29,6 +29,31 @@ export function useAuth() {
     return () => window.removeEventListener('storage', onStorage);
   }, []);
 
+  // Background session validation — every 5 minutes, check if the user is
+  // still an active employee in the synced cache. If deactivated or removed,
+  // log them out silently. No page refresh — runs entirely in the background.
+  useEffect(() => {
+    if (!user?.email) return;
+
+    const checkSession = async () => {
+      try {
+        const response = await base44.functions.invoke('validateSession', {
+          email: user.email,
+        });
+        if (response.data?.valid === false) {
+          localStorage.removeItem(STORAGE_KEY);
+          setUser(null);
+          window.location.href = '/admin/flight-tracker-login';
+        }
+      } catch {
+        // Network errors shouldn't log the user out.
+      }
+    };
+
+    const interval = setInterval(checkSession, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [user?.email]);
+
   const login = useCallback(async (identifier, password) => {
     try {
       const response = await base44.functions.invoke('employeeLogin', {
