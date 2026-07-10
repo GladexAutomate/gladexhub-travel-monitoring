@@ -65,26 +65,62 @@ Deno.serve(async (req) => {
       }, { status: 500 });
     }
 
-    // Replace all existing records in one transaction.
-    await base44.asServiceRole.entities.SyncedEmployee.deleteMany({});
+    // The API only returns active employees — when someone becomes inactive
+    // they disappear from the response entirely. Instead of delete-all-then-
+    // recreate (which would lose their record), we upsert by email and mark
+    // any previously-known employee who's absent from this sync as inactive.
+    const existing = await base44.asServiceRole.entities.SyncedEmployee.list();
+    const existingByEmail = {};
+    existing.forEach((e) => { existingByEmail[e.email] = e; });
 
-    const records = list.map((a) => ({
-      email: (a.email || '').trim().toLowerCase(),
-      employee_code: a.employee_code || '',
-      full_name: a.full_name || '',
-      department: a.department || a.job_title || '',
-      role: a.role || '',
-      team_name: a.team_name || '',
-      is_active: (a.status || a.is_active) === 'active' || a.is_active === true,
-    }));
+    const apiEmails = new Set();
+    const toCreate = [];
+    const toUpdate = [];
 
-    if (records.length > 0) {
-      await base44.asServiceRole.entities.SyncedEmployee.bulkCreate(records);
+    list.forEach((a) => {
+      const email = (a.email || '').trim().toLowerCase();
+      if (!email) return;
+      apiEmails.add(email);
+
+      const record = {
+        email,
+        employee_code: a.employee_code || '',
+        full_name: a.full_name || '',
+        department: a.department || a.job_title || '',
+        role: a.role || '',
+        team_name: a.team_name || '',
+        is_active: (a.status || a.is_active) === 'active' || a.is_active === true,
+      };
+
+      const existingRec = existingByEmail[email];
+      if (existingRec) {
+        toUpdate.push({ id: existingRec.id, ...record });
+      } else {
+        toCreate.push(record);
+      }
+    });
+
+    // Mark any existing employee absent from this API response as inactive.
+    let deactivatedCount = 0;
+    const toDeactivate = Object.values(existingByEmail)
+      .filter((e) => !apiEmails.has(e.email) && e.is_active !== false)
+      .map((e) => { deactivatedCount++; return { id: e.id, is_active: false }; });
+
+    if (toCreate.length > 0) {
+      await base44.asServiceRole.entities.SyncedEmployee.bulkCreate(toCreate);
+    }
+    if (toUpdate.length > 0) {
+      await base44.asServiceRole.entities.SyncedEmployee.bulkUpdate(toUpdate);
+    }
+    if (toDeactivate.length > 0) {
+      await base44.asServiceRole.entities.SyncedEmployee.bulkUpdate(toDeactivate);
     }
 
     return Response.json({
-      synced: records.length,
-      accounts: records,
+      synced: list.length,
+      created: toCreate.length,
+      updated: toUpdate.length,
+      deactivated: deactivatedCount,
     });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
