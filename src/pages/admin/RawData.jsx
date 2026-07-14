@@ -17,7 +17,7 @@ const TABLES = [
 // Fields worth showing by table — keeps columns readable instead of dumping
 // all 50+ JSONB keys. Null means "show all keys from first row".
 const PRIORITY_FIELDS = {
-  fusioo_booking_transactions: ['gdx', 'agent', 'status', 'arrival', 'email_1', 'mobile_1', 'duration', 'voucher', 'created'],
+  fusioo_booking_transactions: ['gdx', 'name_of_agent_1', 'agent_name', 'status', 'lead_name', 'arrival', 'email_1', 'mobile_1', 'duration', 'total_cost', 'voucher', 'created'],
   fusioo_hotel_details: ['room_type', 'final_rate', 'unit_price', 'discount', 'voucher', 'created_by', 'created'],
   fusioo_ticket_details: ['airline', 'eticket_', 'cost', 'ferry', 'item_type', 'audited_by', 'created_by', 'created'],
   fusioo_tour_details: ['tour_name', 'tour_date', 'quantity', 'select_1', 'voucher', 'created', 'created_by'],
