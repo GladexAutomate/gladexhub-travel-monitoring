@@ -19,7 +19,7 @@ const TABLES = [
 const PRIORITY_FIELDS = {
   fusioo_booking_transactions: ['gdx', 'name_of_agent_1', 'agent_name', 'status', 'lead_name', 'arrival', 'email_1', 'mobile_1', 'duration', 'total_cost', 'voucher', 'created'],
   fusioo_hotel_details: ['room_type', 'final_rate', 'unit_price', 'discount', 'voucher', 'created_by', 'created'],
-  fusioo_ticket_details: ['airline', 'eticket_', 'cost', 'ferry', 'item_type', 'audited_by', 'created_by', 'created'],
+  fusioo_ticket_details: ['booking_reference_number_pnr', 'customer_last_name', 'type_of_ticket', 'airline', 'eticket_', 'cost', 'departure_date', 'arrival_date', 'created_by', 'created'],
   fusioo_tour_details: ['tour_name', 'tour_date', 'quantity', 'select_1', 'voucher', 'created', 'created_by'],
   fusioo_transfer_details: ['transfer_type', 'supplier_name', 'transfer_date_arrival', 'transfer_date_departure', 'created'],
 };
