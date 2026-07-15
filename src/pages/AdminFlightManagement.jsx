@@ -88,7 +88,7 @@ function inferTripType(legs) {
 // format as the old direct-supabaseFusioo versions (fusioo rows come back
 // as { id, data } — we map to just the data blob) so the rest of the
 // page's enrichment logic doesn't change. Batching is handled server-side.
-async function selectFusiooByJsonbField(table, field, values) {
+async function selectFusiooByJsonbField(table, field, values, requesterEmail) {
   if (!values || values.length === 0) return [];
   const response = await base44.functions.invoke('querySupabase', {
     project: 'fusioo',
@@ -96,27 +96,33 @@ async function selectFusiooByJsonbField(table, field, values) {
     operation: 'filterJsonbIn',
     jsonbField: field,
     values,
+    requesterEmail,
   });
+  if (response.data?.error) throw new Error(response.data.error);
   return (response.data.rows || []).map((row) => row.data);
 }
 
-async function selectFusiooByIds(table, ids) {
+async function selectFusiooByIds(table, ids, requesterEmail) {
   if (!ids || ids.length === 0) return [];
   const response = await base44.functions.invoke('querySupabase', {
     project: 'fusioo',
     table,
     operation: 'filterIdIn',
     ids,
+    requesterEmail,
   });
+  if (response.data?.error) throw new Error(response.data.error);
   return (response.data.rows || []).map((row) => row.data);
 }
 
-async function selectFusiooAllRows(table) {
+async function selectFusiooAllRows(table, requesterEmail) {
   const response = await base44.functions.invoke('querySupabase', {
     project: 'fusioo',
     table,
     operation: 'selectAllPaginated',
+    requesterEmail,
   });
+  if (response.data?.error) throw new Error(response.data.error);
   return (response.data.rows || []).map((row) => row.data);
 }
 
@@ -180,6 +186,7 @@ export default function AdminFlightManagement() {
 
   const { data: records = [], isLoading, isFetching, isError, refetch } = useQuery({
     queryKey: ["flight_emails"],
+    enabled: !!user?.email,
     queryFn: async () => {
       const response = await base44.functions.invoke('querySupabase', {
         project: 'automate',
@@ -187,7 +194,9 @@ export default function AdminFlightManagement() {
         operation: 'selectAllOrdered',
         orderBy: 'received_date',
         ascending: false,
+        requesterEmail: user?.email,
       });
+      if (response.data?.error) throw new Error(response.data.error);
       return response.data.rows || [];
     },
   });
@@ -216,12 +225,13 @@ export default function AdminFlightManagement() {
 
   const { data: gdxByBookingRef = {} } = useQuery({
     queryKey: ["flight_emails_gdx_lookup_fusioo", bookingRefs],
-    enabled: bookingRefs.length > 0,
+    enabled: bookingRefs.length > 0 && !!user?.email,
     queryFn: async () => {
       const tickets = await selectFusiooByJsonbField(
         "fusioo_ticket_details",
         "booking_reference_number_pnr",
-        bookingRefs
+        bookingRefs,
+        user?.email
       );
 
       // booking_transactions on a Fusioo ticket is an array of Fusioo record
@@ -236,7 +246,7 @@ export default function AdminFlightManagement() {
       // shown on Fusioo's Booking Transactions app — used for RBAC filtering
       // (team_leader sees their team's bookings, agent sees only their own).
       // Both are stored as single-element arrays on the Fusioo record.
-      const bookingRows = await selectFusiooByIds("fusioo_booking_transactions", bookingIds);
+      const bookingRows = await selectFusiooByIds("fusioo_booking_transactions", bookingIds, user?.email);
       const bookingsById = Object.fromEntries(bookingRows.map((b) => [b.id, b]));
 
       const lookup = {};
@@ -308,10 +318,10 @@ export default function AdminFlightManagement() {
   // the admin/developer Team filter, so both agree on who's on which team.
   const { data: agentPrimaryTeam = {} } = useQuery({
     queryKey: ["fusioo_agent_team_roster"],
-    enabled: groupByAgent,
+    enabled: groupByAgent && !!user?.email,
     staleTime: 30 * 60 * 1000,
     queryFn: async () => {
-      const rows = await selectFusiooAllRows("fusioo_booking_transactions");
+      const rows = await selectFusiooAllRows("fusioo_booking_transactions", user?.email);
       const counts = {};
       rows.forEach((b) => {
         const agent = ((b.name_of_agent || [])[0] || "").trim();

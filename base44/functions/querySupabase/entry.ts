@@ -44,11 +44,28 @@ function chunkArray(items, size) {
 Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
-    const user = await base44.auth.me();
-    if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
-
     const body = await req.json();
-    const { project, table, operation } = body;
+    const { project, table, operation, requesterEmail } = body;
+
+    // Flight-tracker auth: validate the caller is an active employee. NOT
+    // base44.auth.me() — flight tracker users authenticate via the
+    // employeeaccount table (see useAuth.js / employeeLogin), not base44
+    // auth, so there is no base44 token on the request. Same pattern as
+    // employeeList / validateSession.
+    const emailLower = (requesterEmail || '').trim().toLowerCase();
+    if (!emailLower) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    const requesterRows = await base44.asServiceRole.entities.SyncedEmployee.filter({
+      email: emailLower,
+    });
+    const requester = requesterRows[0];
+    if (!requester) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (!requester.is_active) {
+      return Response.json({ error: 'Account deactivated' }, { status: 403 });
+    }
 
     const proj = PROJECTS[project];
     if (!proj || !proj.tables.includes(table)) {
