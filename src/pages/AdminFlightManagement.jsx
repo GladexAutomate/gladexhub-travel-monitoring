@@ -1,9 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { supabaseSales } from "@/lib/supabaseSales";
-import { supabaseAutomate } from "@/lib/supabaseAutomate";
-import { supabaseFusioo } from "@/lib/supabaseFusioo";
 import { base44 } from "@/api/base44Client";
 import { useAuth, ADMIN_LIKE_ROLES } from "@/hooks/useAuth";
 import FlightTrackerSidebar from "@/components/FlightTrackerSidebar";
@@ -85,96 +82,42 @@ function inferTripType(legs) {
   return "Multi-city";
 }
 
-function chunkArray(items, size) {
-  const chunks = [];
-  for (let i = 0; i < items.length; i += size) {
-    chunks.push(items.slice(i, i + size));
-  }
-  return chunks;
+// Supabase queries are proxied through the querySupabase backend function
+// because the Base44 frontend can't read VITE_ env vars at runtime (see
+// fetchSupabaseData/entry.ts). These wrappers preserve the same return
+// format as the old direct-supabaseFusioo versions (fusioo rows come back
+// as { id, data } — we map to just the data blob) so the rest of the
+// page's enrichment logic doesn't change. Batching is handled server-side.
+async function selectFusiooByJsonbField(table, field, values) {
+  if (!values || values.length === 0) return [];
+  const response = await base44.functions.invoke('querySupabase', {
+    project: 'fusioo',
+    table,
+    operation: 'filterJsonbIn',
+    jsonbField: field,
+    values,
+  });
+  return (response.data.rows || []).map((row) => row.data);
 }
 
-// PostgREST puts filter values straight into the request URL, so a single
-// .in() call with hundreds of values (easily reached once flight_emails/
-// bookings grow) can blow past the server's URL length limit and fail with
-// a 400/414. Batch into chunks and merge the results instead.
-async function selectInChunks(table, columns, column, values, chunkSize = 150) {
-  if (values.length === 0) return [];
-  const results = await Promise.all(
-    chunkArray(values, chunkSize).map(async (batch) => {
-      const { data, error } = await supabaseSales.from(table).select(columns).in(column, batch);
-      if (error) throw error;
-      return data || [];
-    })
-  );
-  return results.flat();
+async function selectFusiooByIds(table, ids) {
+  if (!ids || ids.length === 0) return [];
+  const response = await base44.functions.invoke('querySupabase', {
+    project: 'fusioo',
+    table,
+    operation: 'filterIdIn',
+    ids,
+  });
+  return (response.data.rows || []).map((row) => row.data);
 }
 
-// Fusioo tables (see fusioo_sync_schema.sql) store one row per Fusioo
-// record as { id, data }, where `data` is the raw record verbatim — `id` is
-// a real top-level column (fast, plain .in() works), but every other field
-// (booking_reference_number_pnr, agent_name, etc.) only exists inside the
-// jsonb `data` blob.
-async function selectFusiooByIds(table, ids, chunkSize = 150) {
-  if (ids.length === 0) return [];
-  const results = await Promise.all(
-    chunkArray(ids, chunkSize).map(async (batch) => {
-      const { data, error } = await supabaseFusioo.from(table).select("data").in("id", batch);
-      if (error) throw error;
-      return (data || []).map((row) => row.data);
-    })
-  );
-  return results.flat();
-}
-
-// Same batching rationale as selectInChunks, but filtering on a jsonb field
-// (data->>field) instead of a real column — needs .filter() with the ->>
-// operator embedded in the column name rather than plain .in(column, ...).
-async function selectFusiooByJsonbField(table, field, values, chunkSize = 150) {
-  if (values.length === 0) return [];
-  const results = await Promise.all(
-    chunkArray(values, chunkSize).map(async (batch) => {
-      const quoted = batch.map((v) => `"${String(v).replace(/"/g, '\\"')}"`).join(",");
-      const { data, error } = await supabaseFusioo
-        .from(table)
-        .select("data")
-        .filter(`data->>${field}`, "in", `(${quoted})`);
-      if (error) throw error;
-      return (data || []).map((row) => row.data);
-    })
-  );
-  return results.flat();
-}
-
-async function selectFusiooAllRows(table, pageSize = 1000) {
-  const rows = [];
-  let from = 0;
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const { data, error } = await supabaseFusioo.from(table).select("data").range(from, from + pageSize - 1);
-    if (error) throw error;
-    rows.push(...(data || []).map((row) => row.data));
-    if (!data || data.length < pageSize) break;
-    from += pageSize;
-  }
-  return rows;
-}
-
-// Fetches every row of a table (for a handful of narrow columns, no filter),
-// paginating past PostgREST's default page-size cap via .range() — used for
-// company-wide aggregates like "this agent's most common team" where
-// filtering to a subset first isn't an option.
-async function selectAllRows(table, columns, pageSize = 1000) {
-  const rows = [];
-  let from = 0;
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const { data, error } = await supabaseSales.from(table).select(columns).range(from, from + pageSize - 1);
-    if (error) throw error;
-    rows.push(...(data || []));
-    if (!data || data.length < pageSize) break;
-    from += pageSize;
-  }
-  return rows;
+async function selectFusiooAllRows(table) {
+  const response = await base44.functions.invoke('querySupabase', {
+    project: 'fusioo',
+    table,
+    operation: 'selectAllPaginated',
+  });
+  return (response.data.rows || []).map((row) => row.data);
 }
 
 // departure_date is stored as a plain "YYYY-MM-DD" string, so plain string
@@ -238,12 +181,14 @@ export default function AdminFlightManagement() {
   const { data: records = [], isLoading, isFetching, isError, refetch } = useQuery({
     queryKey: ["flight_emails"],
     queryFn: async () => {
-      const { data, error } = await supabaseAutomate
-        .from("flight_emails")
-        .select("*")
-        .order("received_date", { ascending: false });
-      if (error) throw error;
-      return data ?? [];
+      const response = await base44.functions.invoke('querySupabase', {
+        project: 'automate',
+        table: 'flight_emails',
+        operation: 'selectAllOrdered',
+        orderBy: 'received_date',
+        ascending: false,
+      });
+      return response.data.rows || [];
     },
   });
 
