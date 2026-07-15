@@ -71,6 +71,31 @@ Deno.serve(async (req) => {
     // record means validateSession returns valid:false (kicking them out
     // of any active session), and employeeLogin checks the API directly so
     // they can't log back in.
+    // The external API (employeeaccount table) has no role field — roles
+    // are managed in admin_accounts (automate Supabase project). Fetch the
+    // full admin_accounts list once and build an email→role map so each
+    // synced employee gets the correct role instead of an empty string.
+    const supabaseUrl = Deno.env.get('VITE_AUTOMATE_SUPABASE_URL');
+    const supabaseKey = Deno.env.get('VITE_AUTOMATE_SUPABASE_ANON_KEY');
+    const roleMap = {};
+    if (supabaseUrl && supabaseKey) {
+      try {
+        const acctRes = await fetch(
+          `${supabaseUrl}/rest/v1/admin_accounts?select=email,role`,
+          { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
+        );
+        if (acctRes.ok) {
+          const acctRows = await acctRes.json();
+          acctRows.forEach((r) => {
+            const normalizedEmail = (r.email || '').trim().toLowerCase();
+            if (normalizedEmail) roleMap[normalizedEmail] = r.role || 'agent';
+          });
+        }
+      } catch {
+        // admin_accounts lookup failed — roles will default to 'agent'.
+      }
+    }
+
     const existing = await base44.asServiceRole.entities.SyncedEmployee.list();
     const existingByEmail = {};
     existing.forEach((e) => { existingByEmail[e.email] = e; });
@@ -89,7 +114,7 @@ Deno.serve(async (req) => {
         employee_code: a.employee_code || '',
         full_name: a.full_name || '',
         department: a.department || a.job_title || '',
-        role: a.role || '',
+        role: roleMap[email] || 'agent',
         team_name: a.team_name || '',
         is_active: true,
       };

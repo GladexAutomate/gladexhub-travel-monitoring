@@ -85,12 +85,38 @@ Deno.serve(async (req) => {
       );
     }
 
+    // The external API (employeeaccount table) has no role field — roles
+    // are managed in admin_accounts (automate Supabase project), seeded per
+    // the SQL migration: default 'agent', with Ashley Sarabia and Kevin
+    // Timbol as super_admin. Look up the role there after API auth.
+    const supabaseUrl = Deno.env.get('VITE_AUTOMATE_SUPABASE_URL');
+    const supabaseKey = Deno.env.get('VITE_AUTOMATE_SUPABASE_ANON_KEY');
+    let role = 'agent';
+    if (supabaseUrl && supabaseKey) {
+      try {
+        const acctRes = await fetch(
+          `${supabaseUrl}/rest/v1/admin_accounts?select=email,role`,
+          { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
+        );
+        if (acctRes.ok) {
+          const acctRows = await acctRes.json();
+          const normalizedEmail = (account.email || '').trim().toLowerCase();
+          const match = acctRows.find(
+            (r) => (r.email || '').trim().toLowerCase() === normalizedEmail
+          );
+          if (match?.role) role = match.role;
+        }
+      } catch {
+        // admin_accounts lookup failed — default to 'agent'.
+      }
+    }
+
     const sessionUser = {
       name: account.full_name,
       email: account.email,
       employeeCode: account.employee_code,
       department: account.department || account.job_title || '',
-      role: account.role || '',
+      role,
       team: account.team_name || '',
     };
 
