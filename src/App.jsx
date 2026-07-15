@@ -58,7 +58,9 @@ const AuthenticatedApp = () => {
       <Route path="/reset-password" element={<ResetPassword />} />
 
       {/* Flight Tracker — own login/RBAC (employeeaccount table), separate
-          from base44 auth above. */}
+          from base44 auth above. /admin redirects here now that the old
+          base44-native dashboard is gone. */}
+      <Route path="/admin" element={<Navigate to="/admin/flight-tracker" replace />} />
       <Route path="/admin/flight-tracker-login" element={<FlightTrackerLogin />} />
       <Route element={<FlightTrackerAuthGuard />}>
         <Route path="/admin/flight-tracker" element={<AdminFlightManagement />} />
