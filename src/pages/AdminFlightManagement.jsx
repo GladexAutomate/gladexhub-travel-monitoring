@@ -245,6 +245,13 @@ export default function AdminFlightManagement() {
       if (error) throw error;
       return data ?? [];
     },
+    // Gmail sync only writes new rows every ~15 min, but poll more often
+    // than that so a newly-synced email shows up without anyone needing to
+    // notice and click Refresh. refetchOnWindowFocus is on here specifically
+    // (overriding the app-wide default in query-client.js) since coming back
+    // to this tab is exactly when someone wants the freshest list.
+    refetchInterval: 60 * 1000,
+    refetchOnWindowFocus: true,
   });
 
   // GDX/client lookup: flight_emails only holds what the airline email says
