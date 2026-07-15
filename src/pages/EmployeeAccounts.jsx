@@ -1,6 +1,6 @@
 import { Navigate } from "react-router-dom";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { supabaseAccounts } from "@/lib/supabaseAccounts";
+import { useQuery } from "@tanstack/react-query";
+import { base44 } from "@/api/base44Client";
 import { useAuth } from "@/hooks/useAuth";
 import FlightTrackerSidebar from "@/components/FlightTrackerSidebar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,31 +20,27 @@ const ROLE_LABELS = {
 
 export default function EmployeeAccounts() {
   const { user } = useAuth();
-  const queryClient = useQueryClient();
 
   const { data: accounts = [], isLoading, isFetching, isError, refetch } = useQuery({
-    queryKey: ["admin_accounts_list"],
+    queryKey: ["synced_employee_list"],
+    enabled: user?.role === "super_admin" && !!user?.email,
     queryFn: async () => {
-      const { data, error } = await supabaseAccounts
-        .from("admin_accounts")
-        .select("id, full_name, employee_code, department, role, is_active")
-        .order("employee_code", { ascending: true });
-      if (error) throw error;
-      return data ?? [];
+      const response = await base44.functions.invoke("employeeList", {
+        requesterEmail: user?.email,
+      });
+      if (response.data?.error) throw new Error(response.data.error);
+      return (response.data?.accounts || []).sort((a, b) =>
+        (a.employee_code || "").localeCompare(b.employee_code || "")
+      );
     },
-    enabled: user?.role === "super_admin",
   });
 
-  const toggleActive = useMutation({
-    mutationFn: async ({ id, is_active }) => {
-      const { error } = await supabaseAccounts
-        .from("admin_accounts")
-        .update({ is_active })
-        .eq("id", id);
-      if (error) throw error;
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin_accounts_list"] }),
-  });
+  // Activate/Deactivate is disabled for now — SyncedEmployee is a read-only
+  // cache refreshed every 5 min from the external accounts API (see
+  // syncEmployeeAccounts/entry.ts), so writing here would just get
+  // overwritten on the next sync. Re-enable once there's a way to update
+  // status at the actual source (the accounts API itself).
+  const toggleActive = { isPending: false, mutate: () => {} };
 
   if (user?.role !== "super_admin") {
     return <Navigate to="/admin/flight-tracker" replace />;
@@ -131,7 +127,8 @@ export default function EmployeeAccounts() {
                         <Button
                           size="sm"
                           variant={account.is_active ? "outline" : "default"}
-                          disabled={toggleActive.isPending}
+                          disabled
+                          title="Not available yet — accounts are managed in the external accounts system, not here."
                           onClick={() => toggleActive.mutate({ id: account.id, is_active: !account.is_active })}
                         >
                           {account.is_active ? "Deactivate" : "Activate"}

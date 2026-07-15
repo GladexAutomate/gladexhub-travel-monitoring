@@ -14,6 +14,7 @@ import CustomerPortal from '@/pages/CustomerPortal';
 import AdminFlightManagement from '@/pages/AdminFlightManagement';
 import EmployeeAccounts from '@/pages/EmployeeAccounts';
 import FlightTrackerLogin from '@/pages/FlightTrackerLogin';
+import SystemDiagnostics from '@/pages/SystemDiagnostics';
 
 // Separate auth system from the base44 useAuth above — flight-tracker RBAC
 // is backed by the employeeaccount table (see src/hooks/useAuth.js), not
@@ -56,6 +57,7 @@ const AuthenticatedApp = () => {
       <Route path="/register" element={<Register />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/diagnostics" element={<SystemDiagnostics />} />
 
       {/* Flight Tracker — own login/RBAC (employeeaccount table), separate
           from base44 auth above. /admin redirects here now that the old

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import bcrypt from 'bcryptjs';
-import { supabaseAccounts } from '@/lib/supabaseAccounts';
+import { useNavigate } from 'react-router-dom';
+import { base44 } from '@/api/base44Client';
 
 const STORAGE_KEY = 'gladex_flight_tracker_user';
 
@@ -20,6 +20,7 @@ function readStoredUser() {
 
 export function useAuth() {
   const [user, setUser] = useState(readStoredUser);
+  const navigate = useNavigate();
 
   useEffect(() => {
     // Keep in sync if another tab logs in/out.
@@ -30,44 +31,47 @@ export function useAuth() {
     return () => window.removeEventListener('storage', onStorage);
   }, []);
 
-  const login = useCallback(async (identifier, password) => {
-    const trimmed = identifier.trim();
-    const { data, error } = await supabaseAccounts
-      .from('admin_accounts')
-      .select('id, full_name, email, employee_code, department, password_hash, role, team_name, is_active')
-      .or(`email.eq.${trimmed},employee_code.eq.${trimmed}`)
-      .limit(1);
+  // Background session validation — every 5 minutes, check if the user is
+  // still an active employee in the synced cache. If deactivated or removed,
+  // log them out silently. No page refresh — runs entirely in the background.
+  useEffect(() => {
+    if (!user?.email) return;
 
-    if (error) throw error;
-    const account = data?.[0];
-    if (!account) throw new Error('Invalid email/username or password.');
-
-    const passwordOk = bcrypt.compareSync(password, account.password_hash);
-    if (!passwordOk) throw new Error('Invalid email/username or password.');
-
-    if (account.is_active === false) throw new Error('This account has been deactivated.');
-
-    // Best-effort — a failed last_login stamp shouldn't block the login itself.
-    supabaseAccounts
-      .from('admin_accounts')
-      .update({ last_login: new Date().toISOString() })
-      .eq('id', account.id)
-      .then(({ error: updateError }) => {
-        if (updateError) console.error('Failed to update last_login', updateError);
-      })
-      .catch((updateError) => console.error('Failed to update last_login', updateError));
-
-    const sessionUser = {
-      name: account.full_name,
-      email: account.email,
-      employeeCode: account.employee_code,
-      department: account.department,
-      role: account.role,
-      team: account.team_name,
+    const checkSession = async () => {
+      try {
+        const response = await base44.functions.invoke('validateSession', {
+          email: user.email,
+        });
+        if (response.data?.valid === false) {
+          localStorage.removeItem(STORAGE_KEY);
+          setUser(null);
+          navigate('/admin/flight-tracker-login', { replace: true });
+        }
+      } catch {
+        // Network errors shouldn't log the user out.
+      }
     };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(sessionUser));
-    setUser(sessionUser);
-    return sessionUser;
+
+    const interval = setInterval(checkSession, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [user?.email]);
+
+  const login = useCallback(async (identifier, password) => {
+    try {
+      const response = await base44.functions.invoke('employeeLogin', {
+        identifier: identifier.trim(),
+        password,
+      });
+      const sessionUser = response.data?.user;
+      if (!sessionUser) throw new Error('Invalid email/username or password.');
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(sessionUser));
+      setUser(sessionUser);
+      return sessionUser;
+    } catch (err) {
+      throw new Error(
+        err.response?.data?.error || err.message || 'Invalid email/username or password.'
+      );
+    }
   }, []);
 
   const logout = useCallback(() => {
