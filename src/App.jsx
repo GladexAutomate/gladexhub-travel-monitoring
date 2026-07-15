@@ -12,14 +12,6 @@ import Register from '@/pages/Register';
 import ForgotPassword from '@/pages/ForgotPassword';
 import ResetPassword from '@/pages/ResetPassword';
 import CustomerPortal from '@/pages/CustomerPortal';
-import AdminLayout from '@/components/admin/AdminLayout';
-import Dashboard from '@/pages/admin/Dashboard';
-import Bookings from '@/pages/admin/Bookings';
-import EmailUpdates from '@/pages/admin/EmailUpdates';
-import TimelineManager from '@/pages/admin/TimelineManager';
-import AdminSettings from '@/pages/admin/AdminSettings';
-import DataSourceMapping from '@/pages/admin/DataSourceMapping';
-import RawData from '@/pages/admin/RawData';
 import AdminFlightManagement from '@/pages/AdminFlightManagement';
 import EmployeeAccounts from '@/pages/EmployeeAccounts';
 import FlightTrackerLogin from '@/pages/FlightTrackerLogin';
@@ -71,18 +63,9 @@ const AuthenticatedApp = () => {
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
 
-      {/* Protected admin routes */}
-      <Route element={<ProtectedRoute unauthenticatedElement={<Navigate to="/login" replace />} />}>
-        <Route element={<AdminLayout />}>
-          <Route path="/admin" element={<Dashboard />} />
-          <Route path="/admin/bookings" element={<Bookings />} />
-          <Route path="/admin/emails" element={<EmailUpdates />} />
-          <Route path="/admin/timeline" element={<TimelineManager />} />
-          <Route path="/admin/settings" element={<AdminSettings />} />
-          <Route path="/admin/datasource" element={<DataSourceMapping />} />
-          <Route path="/admin/raw-data" element={<RawData />} />
-        </Route>
-      </Route>
+      {/* /admin redirects to the Flight Tracker — old native dashboard
+          was removed in commit 087183a / ef0ba94. */}
+      <Route path="/admin" element={<Navigate to="/admin/flight-tracker" replace />} />
 
       {/* Flight Tracker — own login/RBAC (employeeaccount table), separate
           from base44's ProtectedRoute above. */}
