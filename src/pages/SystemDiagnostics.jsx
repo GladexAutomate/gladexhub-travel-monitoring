@@ -7,7 +7,7 @@ import { Link } from 'react-router-dom';
 
 const TESTS = [
   { label: 'Sales (bookings & tickets)', client: supabaseSales, table: 'bookings_6fbdd6b2', envVars: ['VITE_SALES_SUPABASE_URL', 'VITE_SALES_SUPABASE_ANON_KEY'] },
-  { label: 'Fusioo (agent/team mirror)', client: supabaseFusioo, table: 'bookings_6fbdd6b2', envVars: ['VITE_FUSIOO_SUPABASE_URL', 'VITE_FUSIOO_SUPABASE_ANON_KEY'] },
+  { label: 'Fusioo (agent/team mirror)', client: supabaseFusioo, table: 'fusioo_booking_transactions', envVars: ['VITE_FUSIOO_SUPABASE_URL', 'VITE_FUSIOO_SUPABASE_ANON_KEY'] },
   { label: 'Automate (flight emails)', client: supabaseAutomate, table: 'flight_emails', envVars: ['VITE_AUTOMATE_SUPABASE_URL', 'VITE_AUTOMATE_SUPABASE_ANON_KEY'] },
 ];
 
@@ -52,8 +52,16 @@ export default function SystemDiagnostics() {
           <ArrowLeft className="w-4 h-4" /> Back to portal
         </Link>
         <h1 className="text-2xl font-heading font-bold mb-1">System Diagnostics</h1>
-        <p className="text-muted-foreground text-sm mb-8">
-          Verifying all four Supabase project connections from the browser environment.
+        <p className="text-muted-foreground text-sm mb-2">
+          Verifying all three Supabase project connections from the browser environment.
+        </p>
+        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-8">
+          These checks query Supabase directly from this page. On Base44's hosting, VITE_-prefixed
+          environment variables aren't reliably injected into the frontend at runtime — so a FAIL
+          here doesn't necessarily mean the credentials are wrong, it may just mean this specific
+          in-browser check doesn't work in that environment. The app's actual data fetching goes
+          through backend functions (querySupabase), which read credentials server-side and aren't
+          affected by this limitation.
         </p>
 
         <div className="space-y-3">

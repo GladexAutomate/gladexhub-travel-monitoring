@@ -2,10 +2,10 @@ import { createClientFromRequest } from 'npm:@base44/sdk@0.8.38';
 import { createClient } from 'npm:@supabase/supabase-js@2.109.0';
 
 // Flexible Supabase proxy — the Base44 frontend can't read VITE_ env vars
-// at runtime (see src/lib/supabase*.js and fetchSupabaseData comments), so
-// all direct Supabase queries from AdminFlightManagement.jsx route through
-// here. The backend reads project credentials via Deno.env and validates
-// every request against a strict project + table whitelist.
+// at runtime (see src/lib/supabase*.js), so all direct Supabase queries
+// from AdminFlightManagement.jsx route through here. The backend reads
+// project credentials via Deno.env and validates every request against a
+// strict project + table whitelist.
 //
 // Uses the supabase-js client (same library as the frontend) so PostgREST
 // URL building / jsonb filter encoding is handled identically.
@@ -66,6 +66,19 @@ Deno.serve(async (req) => {
     if (!requester.is_active) {
       return Response.json({ error: 'Account deactivated' }, { status: 403 });
     }
+    if (!requester.role) {
+      return Response.json({ error: 'Account role not assigned' }, { status: 403 });
+    }
+
+    // KNOWN GAP: this function does not enforce per-row RBAC (team/agent
+    // scoping) server-side — it trusts AdminFlightManagement.jsx's
+    // accessScoped filter to apply that after the data comes back. Any
+    // active, role-assigned employee (including a plain 'agent') can call
+    // this function directly with operation 'selectAllOrdered'/
+    // 'selectAllPaginated' and receive the full, unscoped table. Closing
+    // this properly requires replicating the agent/team scoping logic here,
+    // which depends on the agentPrimaryTeam roster this function doesn't
+    // compute — flagged for follow-up rather than improvised here.
 
     const proj = PROJECTS[project];
     if (!proj || !proj.tables.includes(table)) {

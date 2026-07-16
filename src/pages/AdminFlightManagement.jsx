@@ -83,47 +83,65 @@ function inferTripType(legs) {
 }
 
 // Supabase queries are proxied through the querySupabase backend function
-// because the Base44 frontend can't read VITE_ env vars at runtime (see
-// fetchSupabaseData/entry.ts). These wrappers preserve the same return
-// format as the old direct-supabaseFusioo versions (fusioo rows come back
-// as { id, data } — we map to just the data blob) so the rest of the
-// page's enrichment logic doesn't change. Batching is handled server-side.
+// because the Base44 frontend can't read VITE_ env vars at runtime. These
+// wrappers preserve the same return format as the old direct-supabaseFusioo
+// versions (fusioo rows come back as { id, data } — we map to just the data
+// blob) so the rest of the page's enrichment logic doesn't change. Batching
+// is handled server-side.
+//
+// base44.functions.invoke() rejects (throws) on any non-2xx response rather
+// than resolving with the error in response.data — so the real backend
+// message (e.g. "Account deactivated") only surfaces if we read it out of
+// the rejected error here, not by checking response.data.error on success.
+function invokeError(err) {
+  return new Error(err.response?.data?.error || err.message);
+}
+
 async function selectFusiooByJsonbField(table, field, values, requesterEmail) {
   if (!values || values.length === 0) return [];
-  const response = await base44.functions.invoke('querySupabase', {
-    project: 'fusioo',
-    table,
-    operation: 'filterJsonbIn',
-    jsonbField: field,
-    values,
-    requesterEmail,
-  });
-  if (response.data?.error) throw new Error(response.data.error);
-  return (response.data.rows || []).map((row) => row.data);
+  try {
+    const response = await base44.functions.invoke('querySupabase', {
+      project: 'fusioo',
+      table,
+      operation: 'filterJsonbIn',
+      jsonbField: field,
+      values,
+      requesterEmail,
+    });
+    return (response.data.rows || []).map((row) => row.data);
+  } catch (err) {
+    throw invokeError(err);
+  }
 }
 
 async function selectFusiooByIds(table, ids, requesterEmail) {
   if (!ids || ids.length === 0) return [];
-  const response = await base44.functions.invoke('querySupabase', {
-    project: 'fusioo',
-    table,
-    operation: 'filterIdIn',
-    ids,
-    requesterEmail,
-  });
-  if (response.data?.error) throw new Error(response.data.error);
-  return (response.data.rows || []).map((row) => row.data);
+  try {
+    const response = await base44.functions.invoke('querySupabase', {
+      project: 'fusioo',
+      table,
+      operation: 'filterIdIn',
+      ids,
+      requesterEmail,
+    });
+    return (response.data.rows || []).map((row) => row.data);
+  } catch (err) {
+    throw invokeError(err);
+  }
 }
 
 async function selectFusiooAllRows(table, requesterEmail) {
-  const response = await base44.functions.invoke('querySupabase', {
-    project: 'fusioo',
-    table,
-    operation: 'selectAllPaginated',
-    requesterEmail,
-  });
-  if (response.data?.error) throw new Error(response.data.error);
-  return (response.data.rows || []).map((row) => row.data);
+  try {
+    const response = await base44.functions.invoke('querySupabase', {
+      project: 'fusioo',
+      table,
+      operation: 'selectAllPaginated',
+      requesterEmail,
+    });
+    return (response.data.rows || []).map((row) => row.data);
+  } catch (err) {
+    throw invokeError(err);
+  }
 }
 
 // departure_date is stored as a plain "YYYY-MM-DD" string, so plain string
@@ -188,16 +206,19 @@ export default function AdminFlightManagement() {
     queryKey: ["flight_emails"],
     enabled: !!user?.email,
     queryFn: async () => {
-      const response = await base44.functions.invoke('querySupabase', {
-        project: 'automate',
-        table: 'flight_emails',
-        operation: 'selectAllOrdered',
-        orderBy: 'received_date',
-        ascending: false,
-        requesterEmail: user?.email,
-      });
-      if (response.data?.error) throw new Error(response.data.error);
-      return response.data.rows || [];
+      try {
+        const response = await base44.functions.invoke('querySupabase', {
+          project: 'automate',
+          table: 'flight_emails',
+          operation: 'selectAllOrdered',
+          orderBy: 'received_date',
+          ascending: false,
+          requesterEmail: user?.email,
+        });
+        return response.data.rows || [];
+      } catch (err) {
+        throw invokeError(err);
+      }
     },
     // Gmail sync only writes new rows every ~15 min, but poll more often
     // than that so a newly-synced email shows up without anyone needing to
@@ -495,16 +516,26 @@ export default function AdminFlightManagement() {
   // Team Leader lookup (team_name -> leader's full_name), sourced from
   // admin_accounts (not flight bookings) — shown inline in each agent's
   // group header below (see FlightRows), not as its own column.
-  const { data: employeeAccounts = [] } = useQuery({
+  const { data: employeeAccounts = [], isError: isTeamLeaderListError } = useQuery({
     queryKey: ["admin_accounts_hierarchy"],
-    enabled: groupByAgent,
+    enabled: groupByAgent && !!user?.email,
     queryFn: async () => {
-      const response = await base44.functions.invoke('employeeList', {
-        requesterEmail: user?.email,
-      });
-      return (response.data?.accounts || []).filter((e) => e.role === 'team_leader');
+      try {
+        const response = await base44.functions.invoke('employeeList', {
+          requesterEmail: user?.email,
+        });
+        return (response.data?.accounts || []).filter((e) => e.role === 'team_leader');
+      } catch (err) {
+        throw invokeError(err);
+      }
     },
   });
+
+  useEffect(() => {
+    if (isTeamLeaderListError) {
+      console.error('Failed to load team leader roster — team leader labels will be blank.');
+    }
+  }, [isTeamLeaderListError]);
 
   const teamLeaderByTeam = useMemo(
     () => Object.fromEntries(employeeAccounts.filter((e) => e.team_name).map((e) => [e.team_name, e.full_name])),

@@ -25,13 +25,20 @@ export default function EmployeeAccounts() {
     queryKey: ["synced_employee_list"],
     enabled: user?.role === "super_admin" && !!user?.email,
     queryFn: async () => {
-      const response = await base44.functions.invoke("employeeList", {
-        requesterEmail: user?.email,
-      });
-      if (response.data?.error) throw new Error(response.data.error);
-      return (response.data?.accounts || []).sort((a, b) =>
-        (a.employee_code || "").localeCompare(b.employee_code || "")
-      );
+      // base44.functions.invoke() rejects on any non-2xx response rather
+      // than resolving with the error in response.data, so the real
+      // message ("Insufficient permissions", etc.) has to be read out of
+      // the rejected error, not a response.data.error check on success.
+      try {
+        const response = await base44.functions.invoke("employeeList", {
+          requesterEmail: user?.email,
+        });
+        return (response.data?.accounts || []).sort((a, b) =>
+          (a.employee_code || "").localeCompare(b.employee_code || "")
+        );
+      } catch (err) {
+        throw new Error(err.response?.data?.error || err.message);
+      }
     },
   });
 

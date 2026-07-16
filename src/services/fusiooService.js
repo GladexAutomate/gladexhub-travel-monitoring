@@ -1,7 +1,7 @@
 // Thin wrapper around the Fusioo REST API (https://api.fusioo.com/v1).
 //
-// NOT used by Login.jsx/useAuth.js — login/RBAC data lives in the
-// employeeaccount table (see supabaseAccounts.js) instead. Two reasons:
+// NOT used by useAuth.js — login/RBAC goes through the employeeLogin
+// backend function instead. Two reasons:
 //   1. VITE_FUSIOO_TOKEN has a VITE_ prefix, so importing this file from any
 //      client component bundles the token into the public JS shipped to
 //      every visitor's browser. That token has broad read access across the

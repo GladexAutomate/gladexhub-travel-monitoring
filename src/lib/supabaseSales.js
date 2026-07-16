@@ -1,9 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 
 // Sales Supabase — main data: bookings_6fbdd6b2, ticket_details_b1d64ca0,
-// flight_emails. Fusioo-linked (synced via webhook). Do not confuse with
-// supabaseAccounts.js, which is a separate Supabase project used only for
-// employeeaccount (login/RBAC).
+// flight_emails. Fusioo-linked (synced via webhook). Login/RBAC data is
+// separate — see the employeeLogin backend function.
 const supabaseUrl = import.meta.env.VITE_SALES_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SALES_SUPABASE_ANON_KEY;
 

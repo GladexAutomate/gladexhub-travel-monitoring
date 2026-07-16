@@ -1,10 +1,20 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.31';
+import bcrypt from 'npm:bcryptjs@2.4.3';
 
 // System-level sync — fetches the full employee list from the external
 // accounts API and replaces all SyncedEmployee records. Called by a
 // scheduled workflow every 5 minutes (and can be invoked manually).
-// Password hashes are intentionally NOT stored — only metadata + active
-// status, which is what session validation and the accounts list need.
+//
+// The external API returns each employee's password in plain text
+// (generated_password). We hash it once here, per sync cycle, and cache
+// only the bcrypt hash — employeeLogin then verifies against this cached
+// hash instead of re-fetching everyone's plain-text password from the API
+// on every single login attempt. password_hash is never returned to the
+// frontend (see employeeList/entry.ts).
+function looksLikeBcryptHash(value) {
+  return /^\$2[aby]?\$\d{2}\$/.test(value);
+}
+
 Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
@@ -84,6 +94,16 @@ Deno.serve(async (req) => {
       if (!email) return;
       apiEmails.add(email);
 
+      const existingRec = existingByEmail[email];
+
+      // Hash fresh on every sync so a password change on the source side is
+      // picked up; if the API's password field is temporarily missing, keep
+      // whatever hash we already had cached rather than wiping it.
+      const plaintextPassword = a.generated_password || a.password || '';
+      const password_hash = plaintextPassword
+        ? (looksLikeBcryptHash(plaintextPassword) ? plaintextPassword : bcrypt.hashSync(plaintextPassword, 10))
+        : (existingRec?.password_hash || '');
+
       const record = {
         email,
         employee_code: a.employee_code || '',
@@ -92,9 +112,9 @@ Deno.serve(async (req) => {
         role: a.role || '',
         team_name: a.team_name || '',
         is_active: true,
+        password_hash,
       };
 
-      const existingRec = existingByEmail[email];
       if (existingRec) {
         toUpdate.push({ id: existingRec.id, ...record });
       } else {
@@ -107,15 +127,12 @@ Deno.serve(async (req) => {
       .filter((e) => !apiEmails.has(e.email))
       .map((e) => e.id);
 
-    if (toCreate.length > 0) {
-      await base44.asServiceRole.entities.SyncedEmployee.bulkCreate(toCreate);
-    }
-    if (toUpdate.length > 0) {
-      await base44.asServiceRole.entities.SyncedEmployee.bulkUpdate(toUpdate);
-    }
-    if (staleIds.length > 0) {
-      await base44.asServiceRole.entities.SyncedEmployee.deleteMany({ id: { $in: staleIds } });
-    }
+    // Independent, disjoint ID sets — no ordering dependency between them.
+    await Promise.all([
+      toCreate.length > 0 ? base44.asServiceRole.entities.SyncedEmployee.bulkCreate(toCreate) : null,
+      toUpdate.length > 0 ? base44.asServiceRole.entities.SyncedEmployee.bulkUpdate(toUpdate) : null,
+      staleIds.length > 0 ? base44.asServiceRole.entities.SyncedEmployee.deleteMany({ id: { $in: staleIds } }) : null,
+    ]);
 
     return Response.json({
       synced: list.length,
