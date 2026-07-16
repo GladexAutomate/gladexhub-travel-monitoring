@@ -35,6 +35,10 @@
       "type": "string",
       "description": "Bcrypt hash of the employee's password, computed once per sync from the external API's plain-text value. Never returned to the frontend."
     },
+    "password_override_hash": {
+      "type": "string",
+      "description": "Bcrypt hash of an admin-issued reset password. When set, employeeLogin verifies against this instead of password_hash, and syncEmployeeAccounts never touches this field — so a reset survives the next sync instead of being overwritten by whatever the external API still has on file."
+    },
     "last_login": {
       "type": "string",
       "description": "ISO timestamp of the employee's last successful login"
