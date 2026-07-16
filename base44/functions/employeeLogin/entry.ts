@@ -27,8 +27,11 @@ Deno.serve(async (req) => {
       cached = all.find((e) => (e.employee_code || '').toLowerCase() === trimmed);
     }
 
-    if (cached && cached.password_hash) {
-      const passwordOk = bcrypt.compareSync(password, cached.password_hash);
+    if (cached && (cached.password_override_hash || cached.password_hash)) {
+      // An admin-issued reset always wins over whatever the API still has
+      // on file — see password_override_hash's description on the entity.
+      const hashToCheck = cached.password_override_hash || cached.password_hash;
+      const passwordOk = bcrypt.compareSync(password, hashToCheck);
       if (!passwordOk) {
         return Response.json(
           { error: 'Invalid email/username or password.' },
