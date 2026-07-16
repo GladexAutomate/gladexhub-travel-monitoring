@@ -30,6 +30,14 @@
       "type": "boolean",
       "default": true,
       "description": "Whether the account is active"
+    },
+    "password_hash": {
+      "type": "string",
+      "description": "Bcrypt hash of the employee's password, computed once per sync from the external API's plain-text value. Never returned to the frontend."
+    },
+    "last_login": {
+      "type": "string",
+      "description": "ISO timestamp of the employee's last successful login"
     }
   },
   "required": [

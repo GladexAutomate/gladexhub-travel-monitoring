@@ -66,6 +66,19 @@ Deno.serve(async (req) => {
     if (!requester.is_active) {
       return Response.json({ error: 'Account deactivated' }, { status: 403 });
     }
+    if (!requester.role) {
+      return Response.json({ error: 'Account role not assigned' }, { status: 403 });
+    }
+
+    // KNOWN GAP: this function does not enforce per-row RBAC (team/agent
+    // scoping) server-side — it trusts AdminFlightManagement.jsx's
+    // accessScoped filter to apply that after the data comes back. Any
+    // active, role-assigned employee (including a plain 'agent') can call
+    // this function directly with operation 'selectAllOrdered'/
+    // 'selectAllPaginated' and receive the full, unscoped table. Closing
+    // this properly requires replicating the agent/team scoping logic here,
+    // which depends on the agentPrimaryTeam roster this function doesn't
+    // compute — flagged for follow-up rather than improvised here.
 
     const proj = PROJECTS[project];
     if (!proj || !proj.tables.includes(table)) {

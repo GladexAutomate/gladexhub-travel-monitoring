@@ -1,14 +1,61 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.31';
+import bcrypt from 'npm:bcryptjs@2.4.3';
 
-// Employee login — fetches the full account list from the external API
-// (key stays server-side), finds the user by email or employee_code,
-// verifies the password, and checks active status.
-//
-// The API returns plain-text generated_password (not bcrypt), so we use
-// a constant-time comparison to avoid timing attacks.
+// Employee login. Verifies against the bcrypt password_hash cached on
+// SyncedEmployee (refreshed every 5 min by syncEmployeeAccounts) so a
+// plain-text password only has to leave the external API once per sync
+// cycle, not on every single login attempt. Falls back to hitting the
+// live API directly only on a cache miss — a brand-new employee logging in
+// before the next sync — so onboarding isn't blocked by the 5-minute lag.
 Deno.serve(async (req) => {
   try {
+    const base44 = createClientFromRequest(req);
     const { identifier, password } = await req.json();
+
+    const trimmed = (identifier || '').trim().toLowerCase();
+    if (!trimmed || !password) {
+      return Response.json(
+        { error: 'Invalid email/username or password.' },
+        { status: 401 }
+      );
+    }
+
+    const byEmail = await base44.asServiceRole.entities.SyncedEmployee.filter({ email: trimmed });
+    let cached = byEmail[0];
+    if (!cached) {
+      const all = await base44.asServiceRole.entities.SyncedEmployee.list();
+      cached = all.find((e) => (e.employee_code || '').toLowerCase() === trimmed);
+    }
+
+    if (cached && cached.password_hash) {
+      const passwordOk = bcrypt.compareSync(password, cached.password_hash);
+      if (!passwordOk) {
+        return Response.json(
+          { error: 'Invalid email/username or password.' },
+          { status: 401 }
+        );
+      }
+      if (!cached.is_active) {
+        return Response.json(
+          { error: 'This account has been deactivated.' },
+          { status: 403 }
+        );
+      }
+
+      base44.asServiceRole.entities.SyncedEmployee.update(cached.id, {
+        last_login: new Date().toISOString(),
+      }).catch(() => {});
+
+      const sessionUser = {
+        name: cached.full_name,
+        email: cached.email,
+        employeeCode: cached.employee_code,
+        department: cached.department || '',
+        role: cached.role || '',
+        team: cached.team_name || '',
+      };
+      return Response.json({ user: sessionUser });
+    }
 
     const apiUrl = Deno.env.get("ACCOUNTS_API_URL");
     const apiKey = Deno.env.get("ACCOUNTS_API_KEY");
@@ -34,7 +81,6 @@ Deno.serve(async (req) => {
     const raw = await response.json();
     const list = Array.isArray(raw) ? raw : (raw.accounts || raw.data || raw.users || []);
 
-    const trimmed = (identifier || '').trim().toLowerCase();
     const account = list.find(
       (a) =>
         (a.email || '').toLowerCase() === trimmed ||
@@ -48,8 +94,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    // The API uses generated_password (plain text). Fall back to
-    // password_hash/password for compatibility if the API format changes.
     const storedPassword = account.generated_password || account.password_hash || account.password;
     if (!storedPassword) {
       return Response.json(
@@ -58,7 +102,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Constant-time comparison to mitigate timing attacks on plain-text passwords.
     function constantTimeCompare(a, b) {
       if (a.length !== b.length) return false;
       let result = 0;
@@ -76,39 +119,13 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Check active status — API uses status: "active", legacy used is_active: boolean.
+    const hasStatusField = account.status !== undefined || account.is_active !== undefined;
     const isActive = account.status === 'active' || account.is_active === true;
     if (!isActive) {
-      return Response.json(
-        { error: 'This account has been deactivated.' },
-        { status: 403 }
-      );
-    }
-
-    // The external API (employeeaccount table) has no role field — roles
-    // are managed in admin_accounts (automate Supabase project), seeded per
-    // the SQL migration: default 'agent', with Ashley Sarabia and Kevin
-    // Timbol as super_admin. Look up the role there after API auth.
-    const supabaseUrl = Deno.env.get('VITE_AUTOMATE_SUPABASE_URL');
-    const supabaseKey = Deno.env.get('VITE_AUTOMATE_SUPABASE_ANON_KEY');
-    let role = 'agent';
-    if (supabaseUrl && supabaseKey) {
-      try {
-        const acctRes = await fetch(
-          `${supabaseUrl}/rest/v1/admin_accounts?select=email,role`,
-          { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
-        );
-        if (acctRes.ok) {
-          const acctRows = await acctRes.json();
-          const normalizedEmail = (account.email || '').trim().toLowerCase();
-          const match = acctRows.find(
-            (r) => (r.email || '').trim().toLowerCase() === normalizedEmail
-          );
-          if (match?.role) role = match.role;
-        }
-      } catch {
-        // admin_accounts lookup failed — default to 'agent'.
-      }
+      const message = hasStatusField
+        ? 'This account has been deactivated.'
+        : 'Account status could not be verified. Contact your administrator.';
+      return Response.json({ error: message }, { status: 403 });
     }
 
     const sessionUser = {
@@ -116,7 +133,7 @@ Deno.serve(async (req) => {
       email: account.email,
       employeeCode: account.employee_code,
       department: account.department || account.job_title || '',
-      role,
+      role: account.role || '',
       team: account.team_name || '',
     };
 

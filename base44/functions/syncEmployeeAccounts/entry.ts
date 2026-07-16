@@ -1,10 +1,20 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.31';
+import bcrypt from 'npm:bcryptjs@2.4.3';
 
 // System-level sync — fetches the full employee list from the external
 // accounts API and replaces all SyncedEmployee records. Called by a
 // scheduled workflow every 5 minutes (and can be invoked manually).
-// Password hashes are intentionally NOT stored — only metadata + active
-// status, which is what session validation and the accounts list need.
+//
+// The external API returns each employee's password in plain text
+// (generated_password). We hash it once here, per sync cycle, and cache
+// only the bcrypt hash — employeeLogin then verifies against this cached
+// hash instead of re-fetching everyone's plain-text password from the API
+// on every single login attempt. password_hash is never returned to the
+// frontend (see employeeList/entry.ts).
+function looksLikeBcryptHash(value) {
+  return /^\$2[aby]?\$\d{2}\$/.test(value);
+}
+
 Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
@@ -32,7 +42,6 @@ Deno.serve(async (req) => {
 
     const raw = await response.json();
 
-    // Handle multiple common API response formats.
     let list;
     if (Array.isArray(raw)) {
       list = raw;
@@ -53,7 +62,6 @@ Deno.serve(async (req) => {
     } else if (raw.data && Array.isArray(raw.data.users)) {
       list = raw.data.users;
     } else {
-      // Can't find an array — return diagnostics so the format can be identified.
       const rawKeys = typeof raw === 'object' && raw !== null ? Object.keys(raw) : [];
       const rawType = typeof raw;
       const rawPreview = JSON.stringify(raw).slice(0, 500);
@@ -63,37 +71,6 @@ Deno.serve(async (req) => {
         rawKeys,
         rawPreview,
       }, { status: 500 });
-    }
-
-    // The API only returns active employees — when someone becomes inactive
-    // they disappear from the response entirely. We upsert by email and
-    // delete any cached record that's absent from this sync. A deleted
-    // record means validateSession returns valid:false (kicking them out
-    // of any active session), and employeeLogin checks the API directly so
-    // they can't log back in.
-    // The external API (employeeaccount table) has no role field — roles
-    // are managed in admin_accounts (automate Supabase project). Fetch the
-    // full admin_accounts list once and build an email→role map so each
-    // synced employee gets the correct role instead of an empty string.
-    const supabaseUrl = Deno.env.get('VITE_AUTOMATE_SUPABASE_URL');
-    const supabaseKey = Deno.env.get('VITE_AUTOMATE_SUPABASE_ANON_KEY');
-    const roleMap = {};
-    if (supabaseUrl && supabaseKey) {
-      try {
-        const acctRes = await fetch(
-          `${supabaseUrl}/rest/v1/admin_accounts?select=email,role`,
-          { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
-        );
-        if (acctRes.ok) {
-          const acctRows = await acctRes.json();
-          acctRows.forEach((r) => {
-            const normalizedEmail = (r.email || '').trim().toLowerCase();
-            if (normalizedEmail) roleMap[normalizedEmail] = r.role || 'agent';
-          });
-        }
-      } catch {
-        // admin_accounts lookup failed — roles will default to 'agent'.
-      }
     }
 
     const existing = await base44.asServiceRole.entities.SyncedEmployee.list();
@@ -109,17 +86,24 @@ Deno.serve(async (req) => {
       if (!email) return;
       apiEmails.add(email);
 
+      const existingRec = existingByEmail[email];
+
+      const plaintextPassword = a.generated_password || a.password || '';
+      const password_hash = plaintextPassword
+        ? (looksLikeBcryptHash(plaintextPassword) ? plaintextPassword : bcrypt.hashSync(plaintextPassword, 10))
+        : (existingRec?.password_hash || '');
+
       const record = {
         email,
         employee_code: a.employee_code || '',
         full_name: a.full_name || '',
         department: a.department || a.job_title || '',
-        role: roleMap[email] || 'agent',
+        role: a.role || '',
         team_name: a.team_name || '',
         is_active: true,
+        password_hash,
       };
 
-      const existingRec = existingByEmail[email];
       if (existingRec) {
         toUpdate.push({ id: existingRec.id, ...record });
       } else {
@@ -127,20 +111,15 @@ Deno.serve(async (req) => {
       }
     });
 
-    // Delete any cached employee no longer in the API response (deactivated).
     const staleIds = Object.values(existingByEmail)
       .filter((e) => !apiEmails.has(e.email))
       .map((e) => e.id);
 
-    if (toCreate.length > 0) {
-      await base44.asServiceRole.entities.SyncedEmployee.bulkCreate(toCreate);
-    }
-    if (toUpdate.length > 0) {
-      await base44.asServiceRole.entities.SyncedEmployee.bulkUpdate(toUpdate);
-    }
-    if (staleIds.length > 0) {
-      await base44.asServiceRole.entities.SyncedEmployee.deleteMany({ id: { $in: staleIds } });
-    }
+    await Promise.all([
+      toCreate.length > 0 ? base44.asServiceRole.entities.SyncedEmployee.bulkCreate(toCreate) : null,
+      toUpdate.length > 0 ? base44.asServiceRole.entities.SyncedEmployee.bulkUpdate(toUpdate) : null,
+      staleIds.length > 0 ? base44.asServiceRole.entities.SyncedEmployee.deleteMany({ id: { $in: staleIds } }) : null,
+    ]);
 
     return Response.json({
       synced: list.length,
