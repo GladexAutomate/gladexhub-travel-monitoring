@@ -20,23 +20,32 @@ Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
 
-    // Role is not stored on the external accounts API — it lives in the
-    // admin_accounts table (accounts Supabase project), seeded/maintained
-    // separately. Fetch it once per sync cycle and merge by email so every
-    // SyncedEmployee carries the correct RBAC role. Employees absent from
-    // admin_accounts default to 'agent'.
+    // Neither role nor team_name is reliably present on the external accounts
+    // API (it has no team_name field at all). Both live in the admin_accounts
+    // table (accounts Supabase project), seeded/maintained separately. Fetch
+    // both once per sync cycle and merge by email so every SyncedEmployee
+    // carries the correct RBAC role and team. Employees absent from
+    // admin_accounts default to role 'agent' and a blank team_name. team_name
+    // is only populated for team leaders assigned a team in admin_accounts;
+    // the API's own value (always empty today) is preferred when present, with
+    // admin_accounts as the fallback when it's blank.
     const accountsUrl = Deno.env.get("VITE_ACCOUNTS_SUPABASE_URL");
     const accountsKey = Deno.env.get("VITE_ACCOUNTS_SUPABASE_ANON_KEY");
-    const roleMap = {};
+    const adminProfileMap = {};
     if (accountsUrl && accountsKey) {
       const accountsSupabase = createClient(accountsUrl, accountsKey);
       const { data: adminRows, error: adminError } = await accountsSupabase
         .from('admin_accounts')
-        .select('email,role');
+        .select('email,role,team_name');
       if (!adminError && Array.isArray(adminRows)) {
         adminRows.forEach((r) => {
           const em = (r.email || '').trim().toLowerCase();
-          if (em && r.role) roleMap[em] = r.role;
+          if (em) {
+            adminProfileMap[em] = {
+              role: r.role || '',
+              team_name: r.team_name || '',
+            };
+          }
         });
       }
     }
@@ -109,6 +118,7 @@ Deno.serve(async (req) => {
       apiEmails.add(email);
 
       const existingRec = existingByEmail[email];
+      const profile = adminProfileMap[email] || {};
 
       const plaintextPassword = a.generated_password || a.password || '';
       const password_hash = plaintextPassword
@@ -120,8 +130,8 @@ Deno.serve(async (req) => {
         employee_code: a.employee_code || '',
         full_name: a.full_name || '',
         department: a.department || a.job_title || '',
-        role: roleMap[email] || a.role || 'agent',
-        team_name: a.team_name || '',
+        role: profile.role || a.role || 'agent',
+        team_name: a.team_name || profile.team_name || '',
         is_active: true,
         password_hash,
       };
