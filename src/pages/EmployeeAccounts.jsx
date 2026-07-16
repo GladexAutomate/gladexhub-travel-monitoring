@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -77,12 +78,24 @@ export default function EmployeeAccounts() {
     onError: (err) => alert(`Failed to reset password: ${err.message}`),
   });
 
-  // Activate/Deactivate is disabled for now — SyncedEmployee is a read-only
-  // cache refreshed every 5 min from the external accounts API (see
-  // syncEmployeeAccounts/entry.ts), so writing here would just get
-  // overwritten on the next sync. Re-enable once there's a way to update
-  // status at the actual source (the accounts API itself).
-  const toggleActive = { isPending: false, mutate: () => {} };
+  // Writes to role_override/is_active_override (not the synced role/
+  // is_active) — see updateEmployeeAccount/entry.ts and the fields'
+  // description on the SyncedEmployee entity. Survives the next sync.
+  const updateAccount = useMutation({
+    mutationFn: async ({ account, patch }) => {
+      try {
+        await base44.functions.invoke("updateEmployeeAccount", {
+          requesterEmail: user?.email,
+          targetId: account.id,
+          ...patch,
+        });
+      } catch (err) {
+        throw new Error(err.response?.data?.error || err.message);
+      }
+    },
+    onSuccess: () => refetch(),
+    onError: (err) => alert(`Failed to update: ${err.message}`),
+  });
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -156,7 +169,7 @@ export default function EmployeeAccounts() {
             <div>
               <h1 className="text-2xl font-display font-bold">Accounts</h1>
               <p className="text-sm text-muted-foreground mt-1">
-                Employee login accounts — reset a password or review status.
+                Employee login accounts — reset a password, change a role, or activate/deactivate access.
               </p>
             </div>
             <div className="flex items-center gap-3">
@@ -248,12 +261,29 @@ export default function EmployeeAccounts() {
                   )}
                   {!isLoading && !isError && filtered.map((account) => {
                     const isResetting = resetPassword.isPending && resetPassword.variables?.id === account.id;
+                    const isUpdating = updateAccount.isPending && updateAccount.variables?.account.id === account.id;
+                    const isSelf = account.email && account.email === user?.email;
                     return (
                       <TableRow key={account.id}>
                         <TableCell className="font-medium">{account.full_name || "—"}</TableCell>
                         <TableCell className="font-mono text-sm">{account.employee_code || "—"}</TableCell>
                         <TableCell>{account.department || "—"}</TableCell>
-                        <TableCell>{ROLE_LABELS[account.role] || account.role || "—"}</TableCell>
+                        <TableCell>
+                          <Select
+                            value={account.role || ""}
+                            disabled={isSelf || isUpdating}
+                            onValueChange={(role) => updateAccount.mutate({ account, patch: { role } })}
+                          >
+                            <SelectTrigger className="w-36 h-8 text-xs">
+                              <SelectValue placeholder="—" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {Object.entries(ROLE_LABELS).map(([value, label]) => (
+                                <SelectItem key={value} value={value}>{label}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
                         <TableCell>
                           {account.is_active ? (
                             <Badge className="bg-emerald-100 text-emerald-700 border border-emerald-200">Active</Badge>
@@ -276,9 +306,11 @@ export default function EmployeeAccounts() {
                             <Button
                               size="sm"
                               variant={account.is_active ? "outline" : "default"}
-                              disabled
-                              title="Not available yet — accounts are managed in the external accounts system, not here."
-                              onClick={() => toggleActive.mutate({ id: account.id, is_active: !account.is_active })}
+                              disabled={isSelf || isUpdating}
+                              title={isSelf ? "Can't deactivate your own account here." : undefined}
+                              onClick={() =>
+                                updateAccount.mutate({ account, patch: { is_active: !account.is_active } })
+                              }
                             >
                               {account.is_active ? "Deactivate" : "Activate"}
                             </Button>

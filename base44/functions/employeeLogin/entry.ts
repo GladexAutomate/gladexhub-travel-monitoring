@@ -7,6 +7,19 @@ import bcrypt from 'npm:bcryptjs@2.4.3';
 // cycle, not on every single login attempt. Falls back to hitting the
 // live API directly only on a cache miss — a brand-new employee logging in
 // before the next sync — so onboarding isn't blocked by the 5-minute lag.
+
+// An admin-issued override always wins over whatever the synced/API value
+// still says — see role_override/is_active_override on the SyncedEmployee
+// entity. syncEmployeeAccounts never touches these two fields.
+function effectiveRole(e) {
+  return e.role_override || e.role || '';
+}
+function effectiveActive(e) {
+  return e.is_active_override !== null && e.is_active_override !== undefined
+    ? e.is_active_override
+    : e.is_active;
+}
+
 Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
@@ -40,7 +53,7 @@ Deno.serve(async (req) => {
           { status: 401 }
         );
       }
-      if (!cached.is_active) {
+      if (!effectiveActive(cached)) {
         return Response.json(
           { error: 'This account has been deactivated.' },
           { status: 403 }
@@ -57,7 +70,7 @@ Deno.serve(async (req) => {
         email: cached.email,
         employeeCode: cached.employee_code,
         department: cached.department || '',
-        role: cached.role || '',
+        role: effectiveRole(cached),
         team: cached.team_name || '',
       };
       return Response.json({ user: sessionUser });
@@ -136,9 +149,11 @@ Deno.serve(async (req) => {
     // Fails closed (blocks when neither field is present) rather than open,
     // but a record missing both fields entirely isn't necessarily an actual
     // deactivation — give that case a distinct message so it's not confused
-    // with a real deactivation when diagnosing a login report.
-    const hasStatusField = account.status !== undefined || account.is_active !== undefined;
-    const isActive = account.status === 'active' || account.is_active === true;
+    // with a real deactivation when diagnosing a login report. An admin
+    // override on a stale/cached record (if one exists) still wins.
+    const hasOverride = cached && cached.is_active_override !== null && cached.is_active_override !== undefined;
+    const hasStatusField = hasOverride || account.status !== undefined || account.is_active !== undefined;
+    const isActive = hasOverride ? cached.is_active_override : (account.status === 'active' || account.is_active === true);
     if (!isActive) {
       const message = hasStatusField
         ? 'This account has been deactivated.'
@@ -151,7 +166,7 @@ Deno.serve(async (req) => {
       email: account.email,
       employeeCode: account.employee_code,
       department: account.department || account.job_title || '',
-      role: account.role || '',
+      role: (cached && cached.role_override) || account.role || '',
       team: account.team_name || '',
     };
 

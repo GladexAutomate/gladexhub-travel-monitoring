@@ -21,7 +21,12 @@ Deno.serve(async (req) => {
       return Response.json({ valid: false, reason: 'not_found' });
     }
 
-    if (!employee.is_active) {
+    // An admin-issued override always wins over the synced value — see
+    // role_override/is_active_override on the SyncedEmployee entity.
+    const isActive = employee.is_active_override !== null && employee.is_active_override !== undefined
+      ? employee.is_active_override
+      : employee.is_active;
+    if (!isActive) {
       return Response.json({ valid: false, reason: 'deactivated' });
     }
 
@@ -32,7 +37,7 @@ Deno.serve(async (req) => {
         email: employee.email,
         employeeCode: employee.employee_code,
         department: employee.department,
-        role: employee.role,
+        role: employee.role_override || employee.role,
         team: employee.team_name,
       },
     });

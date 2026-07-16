@@ -63,10 +63,16 @@ Deno.serve(async (req) => {
     if (!requester) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
-    if (!requester.is_active) {
+    // An admin-issued override always wins over the synced value — see
+    // role_override/is_active_override on the SyncedEmployee entity.
+    const requesterActive = requester.is_active_override !== null && requester.is_active_override !== undefined
+      ? requester.is_active_override
+      : requester.is_active;
+    const requesterRole = requester.role_override || requester.role;
+    if (!requesterActive) {
       return Response.json({ error: 'Account deactivated' }, { status: 403 });
     }
-    if (!requester.role) {
+    if (!requesterRole) {
       return Response.json({ error: 'Account role not assigned' }, { status: 403 });
     }
 
