@@ -42,6 +42,14 @@
     "last_login": {
       "type": "string",
       "description": "ISO timestamp of the employee's last successful login"
+    },
+    "role_override": {
+      "type": "string",
+      "description": "Admin-assigned role that takes priority over the synced role from admin_accounts/the external API. syncEmployeeAccounts never touches this field, so it survives every sync."
+    },
+    "is_active_override": {
+      "type": "boolean",
+      "description": "Admin-assigned active/inactive status that takes priority over the synced is_active. Null/unset means defer to the synced value. syncEmployeeAccounts never touches this field."
     }
   },
   "required": [

@@ -2,16 +2,6 @@ import { createClientFromRequest } from 'npm:@base44/sdk@0.8.31';
 import bcrypt from 'npm:bcryptjs@2.4.3';
 import { createClient } from 'npm:@supabase/supabase-js@2.109.0';
 
-// System-level sync — fetches the full employee list from the external
-// accounts API and replaces all SyncedEmployee records. Called by a
-// scheduled workflow every 5 minutes (and can be invoked manually).
-//
-// The external API returns each employee's password in plain text
-// (generated_password). We hash it once here, per sync cycle, and cache
-// only the bcrypt hash — employeeLogin then verifies against this cached
-// hash instead of re-fetching everyone's plain-text password from the API
-// on every single login attempt. password_hash is never returned to the
-// frontend (see employeeList/entry.ts).
 function looksLikeBcryptHash(value) {
   return /^\$2[aby]?\$\d{2}\$/.test(value);
 }
@@ -20,15 +10,6 @@ Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
 
-    // Neither role nor team_name is reliably present on the external accounts
-    // API (it has no team_name field at all). Both live in the admin_accounts
-    // table (accounts Supabase project), seeded/maintained separately. Fetch
-    // both once per sync cycle and merge by email so every SyncedEmployee
-    // carries the correct RBAC role and team. Employees absent from
-    // admin_accounts default to role 'agent' and a blank team_name. team_name
-    // is only populated for team leaders assigned a team in admin_accounts;
-    // the API's own value (always empty today) is preferred when present, with
-    // admin_accounts as the fallback when it's blank.
     const accountsUrl = Deno.env.get("VITE_ACCOUNTS_SUPABASE_URL");
     const accountsKey = Deno.env.get("VITE_ACCOUNTS_SUPABASE_ANON_KEY");
     const adminProfileMap = {};
@@ -41,10 +22,7 @@ Deno.serve(async (req) => {
         adminRows.forEach((r) => {
           const em = (r.email || '').trim().toLowerCase();
           if (em) {
-            adminProfileMap[em] = {
-              role: r.role || '',
-              team_name: r.team_name || '',
-            };
+            adminProfileMap[em] = { role: r.role || '', team_name: r.team_name || '' };
           }
         });
       }
@@ -54,21 +32,13 @@ Deno.serve(async (req) => {
     const apiKey = Deno.env.get("ACCOUNTS_API_KEY");
 
     if (!apiUrl || !apiKey) {
-      return Response.json(
-        { error: 'Server configuration error: missing API credentials' },
-        { status: 500 }
-      );
+      return Response.json({ error: 'Server configuration error: missing API credentials' }, { status: 500 });
     }
 
-    const response = await fetch(apiUrl, {
-      headers: { 'x-api-key': apiKey },
-    });
+    const response = await fetch(apiUrl, { headers: { 'x-api-key': apiKey } });
 
     if (!response.ok) {
-      return Response.json(
-        { error: `Accounts service returned ${response.status}` },
-        { status: 502 }
-      );
+      return Response.json({ error: `Accounts service returned ${response.status}` }, { status: 502 });
     }
 
     const raw = await response.json();
@@ -96,12 +66,7 @@ Deno.serve(async (req) => {
       const rawKeys = typeof raw === 'object' && raw !== null ? Object.keys(raw) : [];
       const rawType = typeof raw;
       const rawPreview = JSON.stringify(raw).slice(0, 500);
-      return Response.json({
-        error: 'Could not find an array of accounts in the API response',
-        rawType,
-        rawKeys,
-        rawPreview,
-      }, { status: 500 });
+      return Response.json({ error: 'Could not find an array of accounts in the API response', rawType, rawKeys, rawPreview }, { status: 500 });
     }
 
     const existing = await base44.asServiceRole.entities.SyncedEmployee.list();
@@ -143,21 +108,21 @@ Deno.serve(async (req) => {
       }
     });
 
-    const staleIds = Object.values(existingByEmail)
+    const staleUpdates = Object.values(existingByEmail)
       .filter((e) => !apiEmails.has(e.email))
-      .map((e) => e.id);
+      .map((e) => ({ id: e.id, is_active: false }));
 
     await Promise.all([
       toCreate.length > 0 ? base44.asServiceRole.entities.SyncedEmployee.bulkCreate(toCreate) : null,
       toUpdate.length > 0 ? base44.asServiceRole.entities.SyncedEmployee.bulkUpdate(toUpdate) : null,
-      staleIds.length > 0 ? base44.asServiceRole.entities.SyncedEmployee.deleteMany({ id: { $in: staleIds } }) : null,
+      staleUpdates.length > 0 ? base44.asServiceRole.entities.SyncedEmployee.bulkUpdate(staleUpdates) : null,
     ]);
 
     return Response.json({
       synced: list.length,
       created: toCreate.length,
       updated: toUpdate.length,
-      deleted: staleIds.length,
+      deactivated: staleUpdates.length,
     });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
