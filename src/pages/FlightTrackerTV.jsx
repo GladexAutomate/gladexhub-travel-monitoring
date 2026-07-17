@@ -34,16 +34,20 @@ const ALERT_TYPES_BY_PRIORITY = ["cancellation", "reschedule", "needs_attention"
 
 // Each type gets its own recognizable tone/rhythm so someone across the room
 // can tell what happened without reading the screen — a cancellation should
-// sound more urgent than a routine schedule update.
+// sound more urgent than a routine schedule update. Urgency reads through
+// PITCH (higher = more alarming, like a smoke detector, not lower), SPEED
+// (rapid beeps, not measured ones), and volume — not just repeat count.
 const ALERT_TONES = {
-  // Low, insistent, 3 sharp beeps — the most disruptive event (a booking is
-  // now void, not just changed).
-  cancellation: { frequency: 523, count: 3, gap: 0.22, duration: 0.16 },
-  // Medium pitch, 2 beeps — something changed, worth a look.
-  reschedule: { frequency: 880, count: 2, gap: 0.35, duration: 0.3 },
-  // Single, calmer, higher chime — lowest urgency of the three (an
+  // Rapid alternating high/low siren (like a real alarm), loud, sharp
+  // attack — the most disruptive event (a booking is now void, not just
+  // changed).
+  cancellation: { frequencies: [1568, 1175], count: 8, gap: 0.11, duration: 0.1, gain: 0.45, type: "square" },
+  // Medium pitch, 2 measured beeps, moderate volume — something changed,
+  // worth a look, not an emergency.
+  reschedule: { frequencies: [880], count: 2, gap: 0.35, duration: 0.3, gain: 0.28, type: "sine" },
+  // Single, calm, higher chime, quietest of the three — lowest urgency (an
   // unrecognized sender, not a confirmed change).
-  needs_attention: { frequency: 1046, count: 1, gap: 0, duration: 0.4 },
+  needs_attention: { frequencies: [1046], count: 1, gap: 0, duration: 0.4, gain: 0.22, type: "sine" },
 };
 
 function beep(type) {
@@ -54,10 +58,10 @@ function beep(type) {
       const start = i * tone.gap;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.type = "sine";
-      osc.frequency.value = tone.frequency;
+      osc.type = tone.type;
+      osc.frequency.value = tone.frequencies[i % tone.frequencies.length];
       gain.gain.setValueAtTime(0.0001, ctx.currentTime + start);
-      gain.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(tone.gain, ctx.currentTime + start + 0.015);
       gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + tone.duration);
       osc.connect(gain);
       gain.connect(ctx.destination);
