@@ -1,7 +1,7 @@
 import { Toaster } from "@/components/ui/toaster"
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClientInstance } from '@/lib/query-client'
-import { BrowserRouter as Router, Route, Routes, Navigate, Outlet } from 'react-router-dom';
+import { BrowserRouter as Router, Route, Routes, Navigate, Outlet, useLocation } from 'react-router-dom';
 import PageNotFound from './lib/PageNotFound';
 import { AuthProvider, useAuth } from '@/lib/AuthContext';
 import { useAuth as useFlightTrackerAuth } from '@/hooks/useAuth';
@@ -27,10 +27,17 @@ function FlightTrackerAuthGuard() {
   return <Outlet />;
 }
 
+const FLIGHT_TRACKER_PREFIX = '/admin';
+
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
+  const location = useLocation();
+  const isFlightTrackerRoute = location.pathname.startsWith(FLIGHT_TRACKER_PREFIX);
 
-  if (isLoadingPublicSettings || isLoadingAuth) {
+  // Flight Tracker/Accounts pages use their own login (employeeaccount table,
+  // see FlightTrackerAuthGuard above) and must not be blocked by base44's
+  // platform-level auth gate below — skip straight to the route table.
+  if (!isFlightTrackerRoute && (isLoadingPublicSettings || isLoadingAuth)) {
     return (
       <div className="fixed inset-0 flex items-center justify-center">
         <div className="w-8 h-8 border-4 border-orange-200 border-t-orange-600 rounded-full animate-spin"></div>
@@ -38,7 +45,7 @@ const AuthenticatedApp = () => {
     );
   }
 
-  if (authError) {
+  if (!isFlightTrackerRoute && authError) {
     if (authError.type === 'user_not_registered') {
       return <UserNotRegisteredError />;
     } else if (authError.type === 'auth_required') {

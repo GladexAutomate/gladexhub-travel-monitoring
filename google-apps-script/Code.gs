@@ -51,6 +51,11 @@ const CONFIG = {
   // Leave headroom under Apps Script's ~6 minute execution limit so a run on
   // a very large mailbox stops cleanly instead of getting killed mid-thread.
   MAX_RUNTIME_MS: 5 * 60 * 1000,
+  // Label applied by checkForUnknownAirlineSenders_ below — a flight-shaped
+  // email from a sender NOT in KNOWN_AIRLINE_SENDERS (airline changed its
+  // sending address, or a genuinely new airline) so it's still visible
+  // instead of silently never matching any AIRLINES[].senderQuery.
+  LABEL_UNKNOWN_SENDER: 'UnknownAirlineSender',
 };
 
 // Each entry: { name, senderQuery, detectEmailType, parseBookingRef, parseFlights }.
@@ -94,6 +99,19 @@ const AIRLINES = [
     parseBookingRef: parsePALBookingRef_,
     parseFlights: parsePALFlights_,
   },
+];
+
+// Flat list of every sender address configured in AIRLINES above — kept as a
+// separate plain list (rather than parsing each senderQuery's Gmail-search
+// syntax back apart) purely so checkForUnknownAirlineSenders_ below can do a
+// simple address comparison. MUST be kept in sync by hand whenever a sender
+// is added, removed, or changed above.
+const KNOWN_AIRLINE_SENDERS = [
+  'noreplycustsupport@airasia.com',
+  'no-reply@email.mycebupacific.com',
+  'noreply@cebupacificair.com',
+  'noreply@yourbooking.hkexpress.com',
+  'noreply@philippineairlines.com',
 ];
 
 /**
@@ -208,6 +226,69 @@ function runSync_(afterDate, maxThreadsPerAirline) {
   if (stoppedEarly) {
     Logger.log('Stopped early to avoid the execution time limit — run this function again to continue with the rest.');
   }
+
+  // Safety net so a sender change or a brand-new airline is never silently
+  // invisible — runs every time this does (so every 5 minutes via
+  // fetchNewEmails), not just when someone remembers to check manually.
+  checkForUnknownAirlineSenders_();
+}
+
+/**
+ * Broadly searches ALL mail (no sender restriction) for flight-booking-shaped
+ * subjects, then flags any match whose sender ISN'T in KNOWN_AIRLINE_SENDERS.
+ * The per-airline loop in runSync_ can only ever find emails from senders we
+ * already configured — if an airline switches its sending address, or a new
+ * one starts emailing this mailbox, those emails would otherwise never
+ * appear anywhere and nobody would know. This catches that case: it doesn't
+ * try to parse the email (there's no parser for an unknown format yet), it
+ * just labels it and sends an alert so a human can pull a real sample and
+ * add a proper AIRLINES entry — same "verify against a real sample" process
+ * as every other airline here.
+ */
+function checkForUnknownAirlineSenders_() {
+  const label = getOrCreateLabel_(CONFIG.LABEL_UNKNOWN_SENDER);
+  const query =
+    'subject:(itinerary OR "booking reference" OR "e-ticket" OR eticket OR ' +
+    '"flight confirmation" OR "boarding pass" OR reschedule OR cancellation OR ' +
+    'cancelled OR "flight change" OR "schedule change" OR "schedule update" OR PNR)' +
+    ' -label:' + CONFIG.LABEL_UNKNOWN_SENDER +
+    ' -label:' + CONFIG.LABEL_PROCESSED +
+    ' -label:' + CONFIG.LABEL_NEEDS_REVIEW;
+  const threads = GmailApp.search(query, 0, 100);
+
+  const findings = [];
+  threads.forEach(function (thread) {
+    const message = thread.getMessages()[0];
+    const fromHeader = message.getFrom();
+    const addressMatch = fromHeader.match(/<([^>]+)>/);
+    const fromEmail = (addressMatch ? addressMatch[1] : fromHeader).toLowerCase();
+
+    const isKnown = KNOWN_AIRLINE_SENDERS.some(function (known) {
+      return fromEmail === known.toLowerCase();
+    });
+    if (isKnown) return; // already covered by the per-airline loop in runSync_
+
+    thread.addLabel(label);
+    findings.push(fromHeader + ' | ' + message.getSubject());
+  });
+
+  if (findings.length === 0) {
+    Logger.log('checkForUnknownAirlineSenders_: no unrecognized-sender flight emails found.');
+    return;
+  }
+
+  Logger.log('checkForUnknownAirlineSenders_: found ' + findings.length + ' email(s) from an unconfigured sender:');
+  findings.forEach(function (f) { Logger.log('  ' + f); });
+
+  const alertBody =
+    'Found ' + findings.length + ' email(s) that look like flight bookings but come from ' +
+    'a sender NOT configured in AIRLINES (Code.gs):\n\n' +
+    findings.join('\n') +
+    '\n\nThis usually means either an airline changed its sending address, or a new ' +
+    'airline started emailing this mailbox. They\'ve been labeled "' + CONFIG.LABEL_UNKNOWN_SENDER + '" ' +
+    'in Gmail so they won\'t repeat this alert. Pull a real sample (see debugLogSample() ' +
+    'in Code.gs) and add a proper AIRLINES entry once you confirm the format.';
+  MailApp.sendEmail(Session.getActiveUser().getEmail(), 'Flight Tracker: unrecognized airline sender(s) found', alertBody);
 }
 
 function processMessage_(message, airline, supabaseUrl, supabaseKey) {
