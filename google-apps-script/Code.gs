@@ -946,6 +946,43 @@ function resetNeedsReviewEmails() {
  * fetchAllHistoricalEmails to fully drain (each run stops cleanly at the
  * ~5 minute mark and picks up where it left off next time).
  */
+/**
+ * Diagnostic — run this once to find out (a) how many AirAsia emails from
+ * noreplycustsupport@airasia.com actually exist in this mailbox with NO
+ * label filter (so a stale Processed/NeedsReview label from an old run
+ * can't hide them), and (b) which sender address(es) actually send
+ * reschedule/cancellation notices for any airline — since flight_emails
+ * currently has 8,052 rows and every single one is "confirmation" type,
+ * meaning either those emails never arrive at all, or arrive from a sender
+ * address not covered by any AIRLINES[].senderQuery (so they're never even
+ * searched for, let alone parsed).
+ */
+function debugFindMissingEmailTypes() {
+  Logger.log('=== AirAsia raw count (no label filter) ===');
+  const airAsiaThreads = GmailApp.search('from:noreplycustsupport@airasia.com', 0, 50);
+  Logger.log('Found ' + airAsiaThreads.length + ' AirAsia thread(s) (capped at 50).');
+  airAsiaThreads.forEach(function (thread) {
+    const msg = thread.getMessages()[0];
+    Logger.log('  [' + msg.getId() + '] ' + msg.getSubject() + ' (' + msg.getDate() + ')');
+  });
+
+  Logger.log('=== Broad reschedule/cancellation search (any sender, last 2 years) ===');
+  const query = 'subject:(reschedule OR cancelled OR cancellation OR "flight change") newer_than:2y';
+  const threads = GmailApp.search(query, 0, 50);
+  Logger.log('Found ' + threads.length + ' matching thread(s) (capped at 50).');
+  const senderCounts = {};
+  threads.forEach(function (thread) {
+    const msg = thread.getMessages()[0];
+    const from = msg.getFrom();
+    senderCounts[from] = (senderCounts[from] || 0) + 1;
+    Logger.log('  [' + msg.getId() + '] FROM: ' + from + ' | SUBJECT: ' + msg.getSubject());
+  });
+  Logger.log('=== Sender breakdown ===');
+  Object.keys(senderCounts).forEach(function (from) {
+    Logger.log('  ' + from + ': ' + senderCounts[from]);
+  });
+}
+
 function resetAllProcessedEmails() {
   const label = GmailApp.getUserLabelByName(CONFIG.LABEL_PROCESSED);
   if (!label) {
