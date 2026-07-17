@@ -248,7 +248,7 @@ function runSync_(afterDate, maxThreadsPerAirline) {
   // Safety net so a sender change or a brand-new airline is never silently
   // invisible — runs every time this does (so every 5 minutes via
   // fetchNewEmails), not just when someone remembers to check manually.
-  checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey);
+  checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey, afterDate);
 }
 
 /**
@@ -308,12 +308,12 @@ function isLikelyNoise_(fromEmail, subject) {
   return NOISE_SUBJECT_SUBSTRINGS.some(function (s) { return subj.indexOf(s) !== -1; });
 }
 
-function checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey) {
+function checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey, afterDate) {
   const label = getOrCreateLabel_(CONFIG.LABEL_UNKNOWN_SENDER);
   // Wide on purpose — better to catch a marketing email by accident (it just
   // sits harmlessly under the UnknownAirlineSender label) than to miss a real
   // flight disruption because it happened to use a wording not listed here.
-  const query =
+  let query =
     'subject:(itinerary OR "booking reference" OR "e-ticket" OR eticket OR ' +
     '"flight confirmation" OR "boarding pass" OR reschedule OR rebooking OR rebook OR ' +
     'cancellation OR cancelled OR canceled OR "flight change" OR "schedule change" OR ' +
@@ -322,6 +322,14 @@ function checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey) {
     ' -label:' + CONFIG.LABEL_UNKNOWN_SENDER +
     ' -label:' + CONFIG.LABEL_PROCESSED +
     ' -label:' + CONFIG.LABEL_NEEDS_REVIEW;
+  // Same cutoff as the per-airline loop (buildQuery_) — without it, a full
+  // historical backfill run dredges up years-old, long-since-resolved
+  // internal correspondence (rebooking requests from 2024, etc.) that's
+  // just noise today. fetchNewEmails passes afterDate=null, so the 5-minute
+  // trigger is unaffected — a new email is always recent anyway.
+  if (afterDate) {
+    query += ' after:' + afterDate;
+  }
   const threads = GmailApp.search(query, 0, 200);
 
   const findings = [];
