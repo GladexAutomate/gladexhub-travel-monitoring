@@ -82,14 +82,7 @@ export default function FlightTrackerTV() {
   const [now, setNow] = useState(() => new Date());
   const [soundEnabled, setSoundEnabled] = useState(() => localStorage.getItem(SOUND_ENABLED_KEY) === "true");
   const [newlySeenIds, setNewlySeenIds] = useState(() => new Set());
-  const [testType, setTestType] = useState(null); // preview a tone/color on demand instead of waiting for a real new email
   const seenIdsRef = useRef(null); // null until the first successful fetch, so nothing "flashes" on initial load
-
-  const testAlert = (type) => {
-    beep(type);
-    setTestType(type);
-    setTimeout(() => setTestType((t) => (t === type ? null : t)), 3000);
-  };
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
@@ -212,32 +205,6 @@ export default function FlightTrackerTV() {
           <div className="text-sm text-slate-400">{format(now, "EEEE, MMMM d, yyyy")}</div>
         </div>
       </div>
-
-      {/* QA aid — preview each type's tone/color on demand instead of
-          waiting for a real new email to arrive. Safe to remove once
-          everyone's confirmed the alerts sound/look right. */}
-      <div className="flex items-center gap-2 text-xs">
-        <span className="text-slate-500">Test alerts:</span>
-        {ALERT_TYPES_BY_PRIORITY.map((type) => {
-          const meta = TYPE_META[type];
-          return (
-            <button
-              key={type}
-              onClick={() => testAlert(type)}
-              className={cn("px-3 py-1.5 rounded-full border font-semibold transition-colors hover:brightness-125", meta.className)}
-            >
-              {meta.label}
-            </button>
-          );
-        })}
-      </div>
-
-      {testType && (
-        <div className={cn("p-4 rounded-xl border flex items-center gap-3 animate-pulse", TYPE_META[testType].glowClassName, TYPE_META[testType].className)}>
-          {(() => { const Icon = TYPE_META[testType].icon; return <Icon className="w-6 h-6" />; })()}
-          <span className="font-bold text-lg">TEST — {TYPE_META[testType].label} alert</span>
-        </div>
-      )}
 
       {isError && (
         <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/40 text-red-300">
