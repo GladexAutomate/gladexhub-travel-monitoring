@@ -18,32 +18,51 @@ const HIGHLIGHT_MS = 20 * 1000;
 const SOUND_ENABLED_KEY = "gladex_tv_sound_enabled";
 
 const TYPE_META = {
-  confirmation: { label: "Confirmation", icon: CheckCircle2, className: "text-emerald-400 border-emerald-500/40 bg-emerald-500/10" },
-  reschedule: { label: "Reschedule", icon: RotateCcw, className: "text-orange-400 border-orange-500/40 bg-orange-500/10" },
-  cancellation: { label: "Cancellation", icon: XCircle, className: "text-red-400 border-red-500/40 bg-red-500/10" },
-  needs_attention: { label: "Needs Attention", icon: AlertTriangle, className: "text-amber-400 border-amber-500/40 bg-amber-500/10" },
+  confirmation: { label: "Confirmation", icon: CheckCircle2, className: "text-emerald-400 border-emerald-500/40 bg-emerald-500/10", glowClassName: "bg-emerald-500/15" },
+  reschedule: { label: "Reschedule", icon: RotateCcw, className: "text-orange-400 border-orange-500/40 bg-orange-500/10", glowClassName: "bg-orange-500/20" },
+  cancellation: { label: "Cancellation", icon: XCircle, className: "text-red-400 border-red-500/40 bg-red-500/10", glowClassName: "bg-red-500/20" },
+  needs_attention: { label: "Needs Attention", icon: AlertTriangle, className: "text-amber-400 border-amber-500/40 bg-amber-500/10", glowClassName: "bg-amber-500/20" },
 };
 
 // Rows worth an audible alert when they're brand new — a fresh confirmation
 // isn't urgent (it's just a normal new booking), a fresh reschedule/
 // cancellation/needs_attention is exactly what this screen exists to surface.
-const ALERT_TYPES = new Set(["reschedule", "cancellation", "needs_attention"]);
+// Ranked most-to-least urgent — when a poll brings in several different
+// types at once, only the most urgent one's tone plays (stacking 3
+// different overlapping tones would be more confusing than helpful).
+const ALERT_TYPES_BY_PRIORITY = ["cancellation", "reschedule", "needs_attention"];
 
-function beep(times = 1) {
+// Each type gets its own recognizable tone/rhythm so someone across the room
+// can tell what happened without reading the screen — a cancellation should
+// sound more urgent than a routine schedule update.
+const ALERT_TONES = {
+  // Low, insistent, 3 sharp beeps — the most disruptive event (a booking is
+  // now void, not just changed).
+  cancellation: { frequency: 523, count: 3, gap: 0.22, duration: 0.16 },
+  // Medium pitch, 2 beeps — something changed, worth a look.
+  reschedule: { frequency: 880, count: 2, gap: 0.35, duration: 0.3 },
+  // Single, calmer, higher chime — lowest urgency of the three (an
+  // unrecognized sender, not a confirmed change).
+  needs_attention: { frequency: 1046, count: 1, gap: 0, duration: 0.4 },
+};
+
+function beep(type) {
+  const tone = ALERT_TONES[type] || ALERT_TONES.reschedule;
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    for (let i = 0; i < times; i++) {
+    for (let i = 0; i < tone.count; i++) {
+      const start = i * tone.gap;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = "sine";
-      osc.frequency.value = 880;
-      gain.gain.setValueAtTime(0.0001, ctx.currentTime + i * 0.35);
-      gain.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + i * 0.35 + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + i * 0.35 + 0.3);
+      osc.frequency.value = tone.frequency;
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime + start);
+      gain.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + tone.duration);
       osc.connect(gain);
       gain.connect(ctx.destination);
-      osc.start(ctx.currentTime + i * 0.35);
-      osc.stop(ctx.currentTime + i * 0.35 + 0.32);
+      osc.start(ctx.currentTime + start);
+      osc.stop(ctx.currentTime + start + tone.duration + 0.02);
     }
   } catch {
     // Web Audio unavailable — silently skip, the visual flash still works.
@@ -106,10 +125,13 @@ export default function FlightTrackerTV() {
 
     if (freshIds.length > 0) {
       setNewlySeenIds((prev) => new Set([...prev, ...freshIds]));
-      const hasAlertWorthy = records.some(
-        (r) => freshIds.includes(r.gmail_message_id) && ALERT_TYPES.has(r.email_type)
-      );
-      if (hasAlertWorthy && soundEnabled) beep(2);
+
+      if (soundEnabled) {
+        const freshIdSet = new Set(freshIds);
+        const freshTypes = new Set(records.filter((r) => freshIdSet.has(r.gmail_message_id)).map((r) => r.email_type));
+        const mostUrgent = ALERT_TYPES_BY_PRIORITY.find((t) => freshTypes.has(t));
+        if (mostUrgent) beep(mostUrgent);
+      }
 
       setTimeout(() => {
         setNewlySeenIds((prev) => {
@@ -140,7 +162,7 @@ export default function FlightTrackerTV() {
   // browsers/embedded WebViews don't support it, or it's already
   // fullscreen) — that's fine, sound still gets enabled either way.
   const startDisplay = () => {
-    beep(1);
+    beep("reschedule");
     localStorage.setItem(SOUND_ENABLED_KEY, "true");
     setSoundEnabled(true);
     document.documentElement.requestFullscreen?.().catch(() => {});
@@ -207,7 +229,7 @@ export default function FlightTrackerTV() {
             <div className="px-6 py-16 text-center text-slate-500">No flight emails yet.</div>
           )}
           {feed.map((r) => {
-            const meta = TYPE_META[r.email_type] || { label: r.email_type || "Unknown", icon: Plane, className: "text-slate-400 border-slate-600 bg-slate-700/20" };
+            const meta = TYPE_META[r.email_type] || { label: r.email_type || "Unknown", icon: Plane, className: "text-slate-400 border-slate-600 bg-slate-700/20", glowClassName: "bg-slate-500/15" };
             const Icon = meta.icon;
             const isNew = newlySeenIds.has(r.gmail_message_id);
             const legs = r.flights || [];
@@ -216,7 +238,7 @@ export default function FlightTrackerTV() {
                 key={r.gmail_message_id}
                 className={cn(
                   "grid grid-cols-[1fr_1fr_1.4fr_1fr_auto] gap-4 px-6 py-3.5 items-center transition-colors duration-700",
-                  isNew && "bg-orange-500/15 animate-pulse"
+                  isNew && [meta.glowClassName, "animate-pulse"]
                 )}
               >
                 <span className="font-medium truncate">{r.airline || "—"}</span>
