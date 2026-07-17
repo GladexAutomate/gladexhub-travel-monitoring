@@ -134,10 +134,16 @@ export default function FlightTrackerTV() {
     [records]
   );
 
-  const enableSound = () => {
+  // One tap does both — sound and fullscreen both require a real user
+  // gesture before a browser will allow them, so this is the single moment
+  // available to ask for either. requestFullscreen can reject (some
+  // browsers/embedded WebViews don't support it, or it's already
+  // fullscreen) — that's fine, sound still gets enabled either way.
+  const startDisplay = () => {
     beep(1);
     localStorage.setItem(SOUND_ENABLED_KEY, "true");
     setSoundEnabled(true);
+    document.documentElement.requestFullscreen?.().catch(() => {});
   };
 
   return (
@@ -145,12 +151,12 @@ export default function FlightTrackerTV() {
       {!soundEnabled && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center">
           <button
-            onClick={enableSound}
+            onClick={startDisplay}
             className="flex flex-col items-center gap-3 px-10 py-8 rounded-2xl bg-orange-600 hover:bg-orange-500 transition-colors text-white"
           >
             <Volume2 className="w-10 h-10" />
-            <span className="text-xl font-bold">Tap once to enable sound alerts</span>
-            <span className="text-sm text-orange-100">One-time setup for this screen — browsers block audio until the first tap.</span>
+            <span className="text-xl font-bold">Tap once to start the display</span>
+            <span className="text-sm text-orange-100">Enables sound alerts and full-screen — browsers require a tap before allowing either.</span>
           </button>
         </div>
       )}
