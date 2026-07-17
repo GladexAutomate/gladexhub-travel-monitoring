@@ -27,6 +27,7 @@ import {
   Archive,
   UserCircle,
   Tv,
+  Users,
 } from "lucide-react";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
@@ -841,7 +842,7 @@ export default function AdminFlightManagement() {
   );
 }
 
-const HEADER_CELL_CLASS = "text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70 h-9";
+const HEADER_CELL_CLASS = "text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70 h-9 whitespace-nowrap";
 
 function FlightTableHeader() {
   return (
@@ -912,26 +913,32 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
       <Fragment key={r.id}>
         {showTeamHeader && (
           <TableRow className="hover:bg-transparent border-0">
-            <TableCell colSpan={colSpanCount} className="pt-4 pb-1 text-sm font-bold text-foreground">
-              {agentTeam || "Unassigned"}
-              {teamLeaderName && (
-                <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  Team Leader: {teamLeaderName}
+            <TableCell colSpan={colSpanCount} className="pt-5 pb-1.5">
+              <div className="flex items-center gap-2">
+                <Users className="w-3.5 h-3.5 text-orange-600 shrink-0" />
+                <span className="text-[10px] font-bold uppercase tracking-wide text-orange-600">Team</span>
+                <span className="text-sm font-bold text-foreground">{agentTeam || "Unassigned"}</span>
+                <span className="text-xs text-muted-foreground">
+                  · Team Leader: {teamLeaderName || "not yet assigned"}
                 </span>
-              )}
+              </div>
             </TableCell>
           </TableRow>
         )}
         {showAgentHeader && (
           <TableRow className="hover:bg-transparent border-0">
-            <TableCell colSpan={colSpanCount} className={cn("pt-2 pb-1 text-[13px] font-semibold text-foreground/80", isAdminLike && "pl-8")}>
-              {agentKey}
-              {!isAdminLike && (agentTeam || teamLeaderName) && (
-                <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  ({agentTeam || "No team"}
-                  {teamLeaderName ? ` — Team Leader: ${teamLeaderName}` : ""})
-                </span>
-              )}
+            <TableCell colSpan={colSpanCount} className={cn("pt-2 pb-1", isAdminLike && "pl-8")}>
+              <div className="flex items-center gap-2">
+                <UserCircle className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground/70">Agent</span>
+                <span className="text-[13px] font-semibold text-foreground/90">{agentKey}</span>
+                {!isAdminLike && (agentTeam || teamLeaderName) && (
+                  <span className="text-xs text-muted-foreground">
+                    · {agentTeam || "No team"}
+                    {teamLeaderName ? ` — Team Leader: ${teamLeaderName}` : ""}
+                  </span>
+                )}
+              </div>
             </TableCell>
           </TableRow>
         )}
