@@ -1005,6 +1005,34 @@ function debugLogSampleBySubject() {
 }
 
 /**
+ * One-shot debug helper — pulls real samples from the two new PAL sender
+ * addresses checkForUnknownAirlineSenders_ surfaced (neither is the
+ * noreply@philippineairlines.com already in AIRLINES): a reschedule from
+ * no-reply@philippineairlines.com (note the hyphen — a DIFFERENT address),
+ * plus a cancellation and a schedule-change advisory from
+ * palflightadvisory@comms.philippineairlines.com. Logs all three in one run
+ * so a new PAL parser can be verified against real samples without three
+ * separate round-trips.
+ */
+function debugLogNewPALSamples() {
+  function logFirst(query, label) {
+    const threads = GmailApp.search(query, 0, 1);
+    Logger.log('=== ' + label + ' ===');
+    if (threads.length === 0) {
+      Logger.log('No matching emails found for: ' + query);
+      return;
+    }
+    const message = threads[0].getMessages()[0];
+    Logger.log('SUBJECT: ' + message.getSubject());
+    Logger.log('BODY:\n' + message.getPlainBody());
+  }
+
+  logFirst('from:no-reply@philippineairlines.com', 'PAL reschedule (no-reply@philippineairlines.com)');
+  logFirst('from:palflightadvisory@comms.philippineairlines.com subject:"Cancellation Advisory"', 'PAL cancellation advisory');
+  logFirst('from:palflightadvisory@comms.philippineairlines.com subject:"Schedule Change Advisory"', 'PAL schedule change advisory');
+}
+
+/**
  * Debug helper — fetches one exact message by its Gmail message id (the
  * bracketed id printed in runSync_'s SAVED/PARSE ERROR log lines) so a
  * specific failing email can be inspected directly instead of re-searching
