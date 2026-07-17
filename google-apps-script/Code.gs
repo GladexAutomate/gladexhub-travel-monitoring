@@ -288,6 +288,15 @@ const NOISE_SUBJECT_SUBSTRINGS = [
   'seasonal definitions',
   'pre-bid meeting',
   'delivery status notification',
+  // AirAsia's group-booking system closing out a PNR — routine
+  // administrative closure, not a disruption/change notice (same category
+  // Cebu Pacific's own group-quotation system was already excluded for).
+  'pnr closed',
+  // RAKSO (a B2B travel partner)'s own routine new-booking confirmation
+  // template — "GLADEX SM (Reference Code: XXXXXX) ... - Travel Itinerary".
+  // RAKSO's genuine schedule-change/advisory forwards use different subject
+  // wording entirely and are unaffected by this filter.
+  'gladex sm (reference code:',
 ];
 
 function isLikelyNoise_(fromEmail, subject) {
