@@ -53,6 +53,11 @@ const TYPE_STYLES = {
   confirmation: { label: "Confirmation", className: "bg-emerald-100 text-emerald-700 border-emerald-200" },
   reschedule: { label: "Reschedule", className: "bg-orange-100 text-orange-700 border-orange-200" },
   cancellation: { label: "Cancellation", className: "bg-red-100 text-red-700 border-red-200" },
+  // From Code.gs's checkForUnknownAirlineSenders_ — a flight-shaped email
+  // from a sender not yet configured in AIRLINES. No parsed flight details
+  // (booking_ref holds the raw subject line instead) — someone needs to
+  // pull a real sample and add a proper parser.
+  needs_attention: { label: "Needs Attention", className: "bg-amber-100 text-amber-700 border-amber-200" },
 };
 
 function TypeBadge({ type }) {
@@ -624,6 +629,7 @@ export default function AdminFlightManagement() {
                       <SelectItem value="confirmation">Confirmation</SelectItem>
                       <SelectItem value="reschedule">Reschedule</SelectItem>
                       <SelectItem value="cancellation">Cancellation</SelectItem>
+                      <SelectItem value="needs_attention">Needs Attention</SelectItem>
                     </SelectContent>
                   </Select>
 

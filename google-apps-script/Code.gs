@@ -248,7 +248,7 @@ function runSync_(afterDate, maxThreadsPerAirline) {
   // Safety net so a sender change or a brand-new airline is never silently
   // invisible — runs every time this does (so every 5 minutes via
   // fetchNewEmails), not just when someone remembers to check manually.
-  checkForUnknownAirlineSenders_();
+  checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey);
 }
 
 /**
@@ -257,22 +257,30 @@ function runSync_(afterDate, maxThreadsPerAirline) {
  * The per-airline loop in runSync_ can only ever find emails from senders we
  * already configured — if an airline switches its sending address, or a new
  * one starts emailing this mailbox, those emails would otherwise never
- * appear anywhere and nobody would know. This catches that case: it doesn't
- * try to parse the email (there's no parser for an unknown format yet), it
- * just labels it and sends an alert so a human can pull a real sample and
- * add a proper AIRLINES entry — same "verify against a real sample" process
- * as every other airline here.
+ * appear anywhere and nobody would know. This catches that case two ways,
+ * not just one: it labels the thread + sends an email alert (so a human can
+ * pull a real sample and add a proper AIRLINES entry), AND it also saves a
+ * bare-bones placeholder row straight into flight_emails (email_type
+ * 'needs_attention', no parsed flight details) so it shows up directly in
+ * the Flight Tracker dashboard the team already checks daily — an email
+ * alert alone is one channel that's easy to miss; the dashboard is the
+ * second, harder-to-miss one.
  */
-function checkForUnknownAirlineSenders_() {
+function checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey) {
   const label = getOrCreateLabel_(CONFIG.LABEL_UNKNOWN_SENDER);
+  // Wide on purpose — better to catch a marketing email by accident (it just
+  // sits harmlessly under the UnknownAirlineSender label) than to miss a real
+  // flight disruption because it happened to use a wording not listed here.
   const query =
     'subject:(itinerary OR "booking reference" OR "e-ticket" OR eticket OR ' +
-    '"flight confirmation" OR "boarding pass" OR reschedule OR cancellation OR ' +
-    'cancelled OR "flight change" OR "schedule change" OR "schedule update" OR PNR)' +
+    '"flight confirmation" OR "boarding pass" OR reschedule OR rebooking OR rebook OR ' +
+    'cancellation OR cancelled OR canceled OR "flight change" OR "schedule change" OR ' +
+    '"schedule update" OR "flight update" OR "flight advisory" OR "travel advisory" OR ' +
+    '"flight disruption" OR disrupted OR delayed OR delay OR PNR)' +
     ' -label:' + CONFIG.LABEL_UNKNOWN_SENDER +
     ' -label:' + CONFIG.LABEL_PROCESSED +
     ' -label:' + CONFIG.LABEL_NEEDS_REVIEW;
-  const threads = GmailApp.search(query, 0, 100);
+  const threads = GmailApp.search(query, 0, 200);
 
   const findings = [];
   threads.forEach(function (thread) {
@@ -288,6 +296,21 @@ function checkForUnknownAirlineSenders_() {
 
     thread.addLabel(label);
     findings.push(fromHeader + ' | ' + message.getSubject());
+
+    if (supabaseUrl && supabaseKey) {
+      const subject = message.getSubject() || '(no subject)';
+      saveToSupabase_({
+        airline: fromHeader,
+        // No real booking ref exists for an unparsed email — the subject
+        // line at least makes the row findable/recognizable in the admin
+        // UI's search box, which searches booking_ref among other fields.
+        booking_ref: subject.slice(0, 120),
+        email_type: 'needs_attention',
+        flights: [],
+        received_date: message.getDate().toISOString(),
+        gmail_message_id: message.getId(),
+      }, supabaseUrl, supabaseKey);
+    }
   });
 
   if (findings.length === 0) {
