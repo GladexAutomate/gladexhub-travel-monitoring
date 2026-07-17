@@ -148,17 +148,20 @@ export default function FlightTrackerTV() {
 
   return (
     <div className="min-h-screen bg-[#0b0d12] text-slate-100 p-8 flex flex-col gap-6">
+      {/* Non-blocking on purpose — a TV remote's OK button usually works fine
+          here, but if it ever doesn't (odd smart-TV browser, no remote focus
+          landing on the button, etc.) the dashboard itself must still be
+          fully visible and usable underneath. Sound/fullscreen are a nice-to-
+          have layered on top, never a gate in front of the actual feature. */}
       {!soundEnabled && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center">
-          <button
-            onClick={startDisplay}
-            className="flex flex-col items-center gap-3 px-10 py-8 rounded-2xl bg-orange-600 hover:bg-orange-500 transition-colors text-white"
-          >
-            <Volume2 className="w-10 h-10" />
-            <span className="text-xl font-bold">Tap once to start the display</span>
-            <span className="text-sm text-orange-100">Enables sound alerts and full-screen — browsers require a tap before allowing either.</span>
-          </button>
-        </div>
+        <button
+          onClick={startDisplay}
+          autoFocus
+          className="fixed top-6 right-6 z-50 flex items-center gap-2 px-5 py-3 rounded-xl bg-orange-600 hover:bg-orange-500 transition-colors text-white shadow-lg shadow-black/40"
+        >
+          <Volume2 className="w-5 h-5" />
+          <span className="font-semibold">Tap for sound + full-screen</span>
+        </button>
       )}
 
       <div className="flex items-center justify-between">
