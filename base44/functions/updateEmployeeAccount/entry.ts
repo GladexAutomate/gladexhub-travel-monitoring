@@ -1,22 +1,11 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.31';
-import bcrypt from 'npm:bcryptjs@2.4.3';
 
-const READABLE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
-
-function generatePassword(length = 10) {
-  const bytes = new Uint8Array(length);
-  crypto.getRandomValues(bytes);
-  let out = '';
-  for (let i = 0; i < length; i++) {
-    out += READABLE_CHARS[bytes[i] % READABLE_CHARS.length];
-  }
-  return out;
-}
+const VALID_ROLES = ['agent', 'team_leader', 'hr', 'admin', 'super_admin'];
 
 Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
-    const { requesterEmail, targetId } = await req.json();
+    const { requesterEmail, targetId, role, is_active } = await req.json();
 
     const requesterEmailLower = (requesterEmail || '').trim().toLowerCase();
     if (!requesterEmailLower || !targetId) {
@@ -41,17 +30,30 @@ Deno.serve(async (req) => {
       return Response.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
 
+    if (requester.id === targetId) {
+      return Response.json({ error: "Can't change your own role or status here." }, { status: 400 });
+    }
+
+    if (role !== undefined && !VALID_ROLES.includes(role)) {
+      return Response.json({ error: `Invalid role: ${role}` }, { status: 400 });
+    }
+
     const target = await base44.asServiceRole.entities.SyncedEmployee.get(targetId);
     if (!target) {
       return Response.json({ error: 'Employee not found' }, { status: 404 });
     }
 
-    const newPassword = generatePassword();
-    const password_override_hash = bcrypt.hashSync(newPassword, 10);
+    const patch = {};
+    if (role !== undefined) patch.role_override = role;
+    if (is_active !== undefined) patch.is_active_override = is_active;
 
-    await base44.asServiceRole.entities.SyncedEmployee.update(targetId, { password_override_hash });
+    if (Object.keys(patch).length === 0) {
+      return Response.json({ error: 'Nothing to update' }, { status: 400 });
+    }
 
-    return Response.json({ password: newPassword });
+    await base44.asServiceRole.entities.SyncedEmployee.update(targetId, patch);
+
+    return Response.json({ success: true });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }

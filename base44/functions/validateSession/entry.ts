@@ -1,8 +1,5 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.31';
 
-// Session validation — checks whether the given email is still an active
-// employee in the synced cache. Called by the frontend every 5 minutes
-// (via useAuth) to detect deactivation without reloading the page.
 Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
@@ -21,7 +18,10 @@ Deno.serve(async (req) => {
       return Response.json({ valid: false, reason: 'not_found' });
     }
 
-    if (!employee.is_active) {
+    const isActive = employee.is_active_override !== null && employee.is_active_override !== undefined
+      ? employee.is_active_override
+      : employee.is_active;
+    if (!isActive) {
       return Response.json({ valid: false, reason: 'deactivated' });
     }
 
@@ -32,13 +32,11 @@ Deno.serve(async (req) => {
         email: employee.email,
         employeeCode: employee.employee_code,
         department: employee.department,
-        role: employee.role,
+        role: employee.role_override || employee.role,
         team: employee.team_name,
       },
     });
   } catch (error) {
-    // On technical errors, don't log the user out — only explicit
-    // deactivation or removal should end a session.
     return Response.json({ valid: true, reason: 'error', error: error.message });
   }
 });
