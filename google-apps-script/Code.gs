@@ -94,7 +94,23 @@ const AIRLINES = [
   },
   {
     name: 'Philippine Airlines',
-    senderQuery: 'from:noreply@philippineairlines.com',
+    // THREE distinct PAL sender addresses feed this one entry — found via
+    // checkForUnknownAirlineSenders_, which is exactly the gap it exists to
+    // catch: noreply@philippineairlines.com (original, boarding-pass-style
+    // confirmations) never covered the other two at all.
+    //   no-reply@philippineairlines.com (note the hyphen — a DIFFERENT
+    //     address from the one above) also sends "Your Flight Change is
+    //     Confirmed" reschedule notices, and post-flight satisfaction
+    //     surveys (harmless — those don't match any detectPALType_ keyword,
+    //     so they're just skipped as unrecognized, not mis-saved). Its
+    //     reschedule body format isn't verified against a real sample yet;
+    //     worst case it lands in NeedsReview instead of being silently
+    //     invisible like before.
+    //   palflightadvisory@comms.philippineairlines.com sends Cancellation
+    //     Advisory and Schedule Change Advisory emails — verified against
+    //     real samples, handled in parsePALFlights_/parsePALBookingRef_
+    //     below.
+    senderQuery: 'from:(noreply@philippineairlines.com OR no-reply@philippineairlines.com OR palflightadvisory@comms.philippineairlines.com)',
     detectEmailType: detectPALType_,
     parseBookingRef: parsePALBookingRef_,
     parseFlights: parsePALFlights_,
@@ -112,6 +128,8 @@ const KNOWN_AIRLINE_SENDERS = [
   'noreply@cebupacificair.com',
   'noreply@yourbooking.hkexpress.com',
   'noreply@philippineairlines.com',
+  'no-reply@philippineairlines.com',
+  'palflightadvisory@comms.philippineairlines.com',
 ];
 
 /**
@@ -303,8 +321,13 @@ function processMessage_(message, airline, supabaseUrl, supabaseKey) {
     return 'parse_error';
   }
 
-  const bookingRef = airline.parseBookingRef(body);
-  const flights = airline.parseFlights(body);
+  // subject is passed through too (not just body) for PAL's advisory
+  // formats below, which carry the flight/route/date in the SUBJECT line
+  // and no booking reference anywhere in the body at all. Every other
+  // airline's parse functions still only declare (body) and simply ignore
+  // the extra argument.
+  const bookingRef = airline.parseBookingRef(body, subject);
+  const flights = airline.parseFlights(body, subject);
 
   if (!bookingRef || flights.length === 0) {
     Logger.log(
@@ -768,6 +791,10 @@ function parseHKExpressCheckinFlights_(cleanBody) {
 function detectPALType_(subject, body) {
   const subj = subject.toLowerCase();
   const bod = body.toLowerCase();
+  // Advisory emails from palflightadvisory@comms.philippineairlines.com —
+  // checked first since they're unambiguous and don't need the body at all.
+  if (subj.indexOf('cancellation advisory') !== -1) return 'cancellation';
+  if (subj.indexOf('schedule change advisory') !== -1) return 'reschedule';
   if (subj.indexOf('cancel') !== -1 || bod.indexOf('has been cancelled') !== -1) return 'cancellation';
   // "Your Flight Change is Confirmed - ..." is a reschedule, not a fresh
   // booking confirmation — verified against a real sample. Checked before
@@ -778,14 +805,103 @@ function detectPALType_(subject, body) {
   return null;
 }
 
-function parsePALBookingRef_(body) {
+function parsePALBookingRef_(body, subject) {
+  // Advisory emails carry NO booking reference anywhere in the body at all
+  // — verified against real samples — just a passenger-name greeting
+  // ("Dear Mr./Ms. CANDELARIA PEROCHO YAP,"). Used as a surrogate
+  // identifier so these rows are still findable/distinguishable in the
+  // admin UI; clearly not a real PNR, but better than leaving it blank.
+  if (subject && /advisory/i.test(subject)) {
+    const nameMatch = body.match(/Dear Mr\.\/Ms\.\s+([A-Z][A-Z\s]+?),/);
+    return nameMatch ? nameMatch[1].trim() : null;
+  }
+
   // Layout: "...checked in for your flight. *YF8I3E*" immediately followed
   // by the literal label "BOOKING REFERENCE" on the next line.
   const match = body.match(/\*([A-Z0-9]{5,8})\*\s*\n+\s*BOOKING REFERENCE/i);
   return match ? match[1].toUpperCase() : null;
 }
 
-function parsePALFlights_(body) {
+function parsePALFlights_(body, subject) {
+  const subj = subject || '';
+
+  // Cancellation Advisory — no structured flight-details block in the body
+  // at all (verified against a real sample); everything needed is in the
+  // subject line itself: "Flight Cancellation Advisory: Flight PR 454
+  // General Santos (GES) - Manila (MNL) / 12-Jun-26".
+  const cancelAdvisoryMatch = subj.match(
+    /Cancellation Advisory:\s*Flight\s+([A-Z0-9]{2}\s*\d{2,4})\s+.*?\(([A-Z]{3})\)\s*-\s*.*?\(([A-Z]{3})\)\s*\/\s*(\d{1,2}-[A-Za-z]{3}-\d{2,4})/i
+  );
+  if (cancelAdvisoryMatch) {
+    return [{
+      route: cancelAdvisoryMatch[2].toUpperCase() + '-' + cancelAdvisoryMatch[3].toUpperCase(),
+      flight_no: cancelAdvisoryMatch[1].toUpperCase().replace(/\s+/, ' '),
+      origin: cancelAdvisoryMatch[2].toUpperCase(),
+      destination: cancelAdvisoryMatch[3].toUpperCase(),
+      departure_date: normalizeDate_(cancelAdvisoryMatch[4]),
+      departure_time: null,
+      arrival_date: normalizeDate_(cancelAdvisoryMatch[4]),
+      arrival_time: null,
+      original_departure_time: null,
+      original_arrival_time: null,
+    }];
+  }
+
+  // Schedule Change Advisory — subject gives route/flight/date; body has a
+  // NEW-vs-ORIGINAL "FLIGHT DETAILS" table with the actual times, in this
+  // fixed order (verified against a real sample): new-departure,
+  // original-departure, new-arrival, original-arrival.
+  const scheduleAdvisoryMatch = subj.match(
+    /Schedule Change Advisory:\s*Flight\s+([A-Z0-9]{2}\s*\d{2,4})\s+on\s+(\d{1,2}-[A-Za-z]{3}-\d{2,4})\s+from\s+.*?\(([A-Z]{3})\)\s+to\s+.*?\(([A-Z]{3})\)/i
+  );
+  if (scheduleAdvisoryMatch) {
+    const flightNo = scheduleAdvisoryMatch[1].toUpperCase().replace(/\s+/, ' ');
+    const origin = scheduleAdvisoryMatch[3].toUpperCase();
+    const destination = scheduleAdvisoryMatch[4].toUpperCase();
+    const fallbackDate = normalizeDate_(scheduleAdvisoryMatch[2]);
+
+    const detailsIdx = body.indexOf('FLIGHT DETAILS');
+    const tableWindow = detailsIdx !== -1 ? body.slice(detailsIdx, detailsIdx + 600) : '';
+    const times = tableWindow.match(/\b\d{1,2}:\d{2}\b/g);
+
+    // Same date for both schedules in the verified sample — an overnight
+    // schedule change crossing midnight isn't covered here, an acceptable
+    // simplification (it would just show the wrong date, not fail to save).
+    if (times && times.length >= 4) {
+      return [{
+        route: origin + '-' + destination,
+        flight_no: flightNo,
+        origin: origin,
+        destination: destination,
+        departure_date: fallbackDate,
+        departure_time: times[0],
+        arrival_date: fallbackDate,
+        arrival_time: times[2],
+        original_departure_time: times[0] !== times[1] ? times[1] : null,
+        original_arrival_time: times[2] !== times[3] ? times[3] : null,
+      }];
+    }
+
+    // Table layout didn't match — still save the subject-derived basics
+    // rather than losing the record entirely to NeedsReview.
+    return [{
+      route: origin + '-' + destination,
+      flight_no: flightNo,
+      origin: origin,
+      destination: destination,
+      departure_date: fallbackDate,
+      departure_time: null,
+      arrival_date: fallbackDate,
+      arrival_time: null,
+      original_departure_time: null,
+      original_arrival_time: null,
+    }];
+  }
+
+  return parsePALBoardingPassFlights_(body);
+}
+
+function parsePALBoardingPassFlights_(body) {
   // Layout (single leg only in the verified sample — a route with a
   // connection would need a second sample to confirm how it repeats):
   //   MNL
@@ -851,7 +967,11 @@ function normalizeDate_(raw) {
   if (parts.length < 3) return raw.trim();
   const day = parts[0].padStart(2, '0');
   const mon = months[parts[1].slice(0, 3).toLowerCase()] || '01';
-  const year = parts[2];
+  // PAL's advisory subjects use a 2-digit year ("12-Jun-26"), unlike every
+  // other airline's 4-digit samples — expand it so callers always get a
+  // real 4-digit year instead of e.g. "26-06-12" (parsed as year 0026).
+  const yearRaw = parts[2];
+  const year = yearRaw.length === 2 ? '20' + yearRaw : yearRaw;
   return year + '-' + mon + '-' + day;
 }
 
