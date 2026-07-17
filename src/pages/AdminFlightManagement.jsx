@@ -722,6 +722,13 @@ export default function AdminFlightManagement() {
                       <TableRow>
                         <TableCell colSpan={colSpanCount} className="text-center py-12">
                           <div className="w-6 h-6 mx-auto border-4 border-orange-200 border-t-orange-500 rounded-full animate-spin" />
+                          {/* This dataset is large (10,000+ rows fetched in full on every
+                              load — no incremental/delta fetch yet) — a few seconds here
+                              is expected, not a hang. Said explicitly so it doesn't get
+                              reported as a bug during testing. */}
+                          <p className="text-sm text-muted-foreground mt-3">
+                            Loading flight emails — this can take a few seconds with a large dataset.
+                          </p>
                         </TableCell>
                       </TableRow>
                     )}
