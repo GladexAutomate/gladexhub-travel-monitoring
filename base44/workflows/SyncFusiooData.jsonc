@@ -1,0 +1,45 @@
+{
+  "description": "Fetches the latest records from every Fusioo app (Booking Transactions, Ticket/Hotel/Tour/Transfer Details) every 30 minutes and upserts them into the matching fusioo_* Supabase table. Runs entirely on the backend.",
+  "definition": {
+    "document": {
+      "dsl": "1.0.0",
+      "name": "sync_fusioo_data",
+      "version": "1.0",
+      "namespace": "base44"
+    },
+    "do": [
+      {
+        "sync_fusioo": {
+          "call": "invoke_backend_function",
+          "with": {
+            "function_name": "syncFusiooData",
+            "args": {}
+          },
+          "then": "end",
+          "x-base44": {
+            "title": "Sync Fusioo data",
+            "description": "Refresh from Fusioo API"
+          }
+        }
+      }
+    ]
+  },
+  "trigger": {
+    "condition": null,
+    "config": {
+      "trigger_type": "scheduled",
+      "events": [],
+      "schedule_mode": "recurring",
+      "cron_expression": "*/30 * * * *",
+      "one_time_date": null,
+      "timezone": "Asia/Taipei",
+      "interval_value": null,
+      "interval_unit": null,
+      "interval_anchor": null,
+      "ends_type": "never",
+      "ends_on_date": null,
+      "ends_after_count": null
+    }
+  },
+  "name": "Sync Fusioo Data"
+}
