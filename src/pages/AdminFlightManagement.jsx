@@ -26,6 +26,7 @@ import {
   ChevronLeft,
   Archive,
   UserCircle,
+  Tv,
 } from "lucide-react";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
@@ -601,6 +602,15 @@ export default function AdminFlightManagement() {
                 <RefreshCw className={cn("w-4 h-4", isFetching && "animate-spin")} />
                 Refresh
               </Button>
+              {/* Opens in a new tab so the TV device can navigate straight to
+                  that URL and be left open indefinitely — no mouse/keyboard
+                  needed there after the one-time login. */}
+              <Button variant="outline" className="gap-2" asChild>
+                <a href="/admin/flight-tracker-tv" target="_blank" rel="noopener noreferrer">
+                  <Tv className="w-4 h-4" />
+                  TV Display
+                </a>
+              </Button>
               <Button variant="outline" className="gap-2" onClick={handleLogout}>
                 <LogOut className="w-4 h-4" />
                 Logout
@@ -901,11 +911,11 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
     return (
       <Fragment key={r.id}>
         {showTeamHeader && (
-          <TableRow className="bg-orange-50 hover:bg-orange-50 border-b border-orange-200">
-            <TableCell colSpan={colSpanCount} className="py-2 text-sm font-bold text-orange-900">
+          <TableRow className="hover:bg-transparent border-0">
+            <TableCell colSpan={colSpanCount} className="pt-4 pb-1 text-sm font-bold text-foreground">
               {agentTeam || "Unassigned"}
               {teamLeaderName && (
-                <span className="ml-2 text-xs font-normal text-orange-600/80">
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
                   Team Leader: {teamLeaderName}
                 </span>
               )}
@@ -913,8 +923,8 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
           </TableRow>
         )}
         {showAgentHeader && (
-          <TableRow className="bg-muted hover:bg-muted">
-            <TableCell colSpan={colSpanCount} className={cn("py-2 text-sm font-semibold", isAdminLike && "pl-8")}>
+          <TableRow className="hover:bg-transparent border-0">
+            <TableCell colSpan={colSpanCount} className={cn("pt-2 pb-1 text-[13px] font-semibold text-foreground/80", isAdminLike && "pl-8")}>
               {agentKey}
               {!isAdminLike && (agentTeam || teamLeaderName) && (
                 <span className="ml-2 text-xs font-normal text-muted-foreground">
@@ -926,8 +936,8 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
           </TableRow>
         )}
         {showGroupHeader && (
-          <TableRow className="bg-muted/50 hover:bg-muted/50">
-            <TableCell colSpan={colSpanCount} className="py-2 text-xs font-semibold text-muted-foreground">
+          <TableRow className="hover:bg-transparent border-0">
+            <TableCell colSpan={colSpanCount} className={cn("pt-1.5 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70", isAdminLike && "pl-12")}>
               {groupLabelFor(dateKey, todayKey, yesterdayKey)}
             </TableCell>
           </TableRow>

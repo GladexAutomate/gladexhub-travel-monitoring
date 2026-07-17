@@ -14,6 +14,7 @@ import CustomerPortal from '@/pages/CustomerPortal';
 import AdminFlightManagement from '@/pages/AdminFlightManagement';
 import EmployeeAccounts from '@/pages/EmployeeAccounts';
 import FlightTrackerLogin from '@/pages/FlightTrackerLogin';
+import FlightTrackerTV from '@/pages/FlightTrackerTV';
 import SystemDiagnostics from '@/pages/SystemDiagnostics';
 
 // Separate auth system from the base44 useAuth above — flight-tracker RBAC
@@ -76,6 +77,10 @@ const AuthenticatedApp = () => {
         {/* Developer-only — EmployeeAccounts itself redirects non-developers
             back to /admin/flight-tracker; this guard only checks login. */}
         <Route path="/admin/accounts" element={<EmployeeAccounts />} />
+        {/* Meant to stay open indefinitely on a wall-mounted TV/monitor with
+            no mouse/keyboard — log in once on that device, then just leave
+            the tab open. Same login gate as every other /admin route. */}
+        <Route path="/admin/flight-tracker-tv" element={<FlightTrackerTV />} />
       </Route>
 
       <Route path="*" element={<PageNotFound />} />
