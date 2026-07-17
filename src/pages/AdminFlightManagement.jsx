@@ -467,9 +467,22 @@ export default function AdminFlightManagement() {
     });
 
     const agentNameOf = (r) => gdxByBookingRef[r.booking_ref]?.agentName || "";
+    // Admin-like views group Team Leader first, then agent within that team,
+    // so the hierarchy reads Team Leader -> their agents -> bookings instead
+    // of one flat alphabetical list of agents mixed across teams. A
+    // team_leader's own view only ever has one team, so it stays agent-only.
+    // "￿" sorts unassigned-team bookings after every real team name.
+    const teamKeyOf = (r) => {
+      const team = agentPrimaryTeam[agentNameOf(r)];
+      return team ? team.toLowerCase() : "￿";
+    };
 
     up.sort((a, b) => {
       if (groupByAgent) {
+        if (isAdminLike) {
+          const teamCmp = teamKeyOf(a).localeCompare(teamKeyOf(b));
+          if (teamCmp !== 0) return teamCmp;
+        }
         const agentCmp = agentNameOf(a).localeCompare(agentNameOf(b));
         if (agentCmp !== 0) return agentCmp;
       }
@@ -482,6 +495,10 @@ export default function AdminFlightManagement() {
     });
     arch.sort((a, b) => {
       if (groupByAgent) {
+        if (isAdminLike) {
+          const teamCmp = teamKeyOf(a).localeCompare(teamKeyOf(b));
+          if (teamCmp !== 0) return teamCmp;
+        }
         const agentCmp = agentNameOf(a).localeCompare(agentNameOf(b));
         if (agentCmp !== 0) return agentCmp;
       }
@@ -491,7 +508,7 @@ export default function AdminFlightManagement() {
     });
 
     return { upcoming: up, archived: arch };
-  }, [filtered, todayKey, groupByAgent, gdxByBookingRef]);
+  }, [filtered, todayKey, groupByAgent, isAdminLike, gdxByBookingRef, agentPrimaryTeam]);
 
   const upcomingPageCount = Math.max(1, Math.ceil(upcoming.length / PAGE_SIZE));
   const upcomingPage = Math.min(page, upcomingPageCount);
@@ -720,6 +737,7 @@ export default function AdminFlightManagement() {
                         todayKey={todayKey}
                         yesterdayKey={yesterdayKey}
                         groupByAgent={groupByAgent}
+                        isAdminLike={isAdminLike}
                         teamLeaderByTeam={teamLeaderByTeam}
                         agentPrimaryTeam={agentPrimaryTeam}
                         showDebugInfo={user?.role === "super_admin"}
@@ -780,6 +798,7 @@ export default function AdminFlightManagement() {
                           todayKey={todayKey}
                           yesterdayKey={yesterdayKey}
                           groupByAgent={groupByAgent}
+                          isAdminLike={isAdminLike}
                           teamLeaderByTeam={teamLeaderByTeam}
                           agentPrimaryTeam={agentPrimaryTeam}
                           showDebugInfo={user?.role === "super_admin"}
@@ -833,8 +852,9 @@ function groupLabelFor(dateKey, todayKey, yesterdayKey) {
   return formatDate(dateKey, "EEEE, MMM d, yyyy");
 }
 
-function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByDate, todayKey, yesterdayKey, groupByAgent, teamLeaderByTeam, agentPrimaryTeam, showDebugInfo }) {
+function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByDate, todayKey, yesterdayKey, groupByAgent, isAdminLike, teamLeaderByTeam, agentPrimaryTeam, showDebugInfo }) {
   let lastAgentKey;
+  let lastTeamKey;
   let lastDateKey;
   const colSpanCount = 9;
 
@@ -845,6 +865,23 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
     const isExpanded = expandedId === r.id;
 
     const agentKey = gdxInfo?.agentName || "(Unassigned)";
+    // The agent's overall team (majority vote across all their bookings),
+    // not this specific row's own team tag — a booking's tag can disagree
+    // with the agent's real team on a handful of transactions.
+    const agentTeam = agentPrimaryTeam?.[agentKey];
+    const teamLeaderName = agentTeam ? teamLeaderByTeam?.[agentTeam] : null;
+    const teamKey = agentTeam || "__unassigned__";
+
+    // Admin-like views get a Team Leader header above the agent header (so
+    // the hierarchy reads Team Leader -> their agents -> bookings). A
+    // team_leader's own view only ever has one team, so it keeps the single
+    // agent-level header it always had.
+    let showTeamHeader = false;
+    if (groupByAgent && isAdminLike && teamKey !== lastTeamKey) {
+      showTeamHeader = true;
+      lastTeamKey = teamKey;
+      lastAgentKey = undefined; // force the agent header to also show
+    }
     const showAgentHeader = groupByAgent && agentKey !== lastAgentKey;
     if (groupByAgent && agentKey !== lastAgentKey) {
       lastAgentKey = agentKey;
@@ -855,19 +892,25 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
     const showGroupHeader = groupByDate && dateKey !== lastDateKey;
     if (groupByDate) lastDateKey = dateKey;
 
-    // The agent's overall team (majority vote across all their bookings),
-    // not this specific row's own team tag — a booking's tag can disagree
-    // with the agent's real team on a handful of transactions.
-    const agentTeam = agentPrimaryTeam?.[agentKey];
-    const teamLeaderName = agentTeam ? teamLeaderByTeam?.[agentTeam] : null;
-
     return (
       <Fragment key={r.id}>
+        {showTeamHeader && (
+          <TableRow className="bg-slate-800 hover:bg-slate-800">
+            <TableCell colSpan={colSpanCount} className="py-2.5 text-sm font-bold text-white">
+              {agentTeam || "Unassigned"}
+              {teamLeaderName && (
+                <span className="ml-2 text-xs font-normal text-slate-300">
+                  Team Leader: {teamLeaderName}
+                </span>
+              )}
+            </TableCell>
+          </TableRow>
+        )}
         {showAgentHeader && (
           <TableRow className="bg-muted hover:bg-muted">
-            <TableCell colSpan={colSpanCount} className="py-2 text-sm font-semibold">
+            <TableCell colSpan={colSpanCount} className={cn("py-2 text-sm font-semibold", isAdminLike && "pl-8")}>
               {agentKey}
-              {(agentTeam || teamLeaderName) && (
+              {!isAdminLike && (agentTeam || teamLeaderName) && (
                 <span className="ml-2 text-xs font-normal text-muted-foreground">
                   ({agentTeam || "No team"}
                   {teamLeaderName ? ` — Team Leader: ${teamLeaderName}` : ""})
