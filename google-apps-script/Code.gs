@@ -266,6 +266,39 @@ function runSync_(afterDate, maxThreadsPerAirline) {
  * alert alone is one channel that's easy to miss; the dashboard is the
  * second, harder-to-miss one.
  */
+// Sender domains that are never a real flight disruption/change notice, no
+// matter what keyword they happen to match on — pure noise found via a live
+// run: bounced-mail system notices, marketing tools, travel trade news, and
+// insurance product marketing (their "Flight Delay Insurance" emails are an
+// upsell pitch, not an actual notice that a specific flight is delayed).
+const NOISE_SENDER_DOMAINS = [
+  'pabbly.com',
+  'ttgasia.com',
+  'mailer.ttgasia.com',
+  'tuneprotect.com',
+  'prulifeuk.com.ph',
+];
+
+// Subject substrings that are never a real flight disruption/change notice
+// either, regardless of sender — hotel-rate negotiation threads and internal
+// meeting invites/cancellations happen to contain words like "cancel" or
+// "rate", and Gmail's own bounce notices contain "delay".
+const NOISE_SUBJECT_SUBSTRINGS = [
+  'contracted rate',
+  'seasonal definitions',
+  'pre-bid meeting',
+  'delivery status notification',
+];
+
+function isLikelyNoise_(fromEmail, subject) {
+  const domain = fromEmail.split('@')[1] || '';
+  if (NOISE_SENDER_DOMAINS.some(function (d) { return domain === d || domain.endsWith('.' + d); })) return true;
+  if (fromEmail.indexOf('mailer-daemon') !== -1 || fromEmail.indexOf('postmaster') !== -1) return true;
+
+  const subj = subject.toLowerCase();
+  return NOISE_SUBJECT_SUBSTRINGS.some(function (s) { return subj.indexOf(s) !== -1; });
+}
+
 function checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey) {
   const label = getOrCreateLabel_(CONFIG.LABEL_UNKNOWN_SENDER);
   // Wide on purpose — better to catch a marketing email by accident (it just
@@ -293,6 +326,15 @@ function checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey) {
       return fromEmail === known.toLowerCase();
     });
     if (isKnown) return; // already covered by the per-airline loop in runSync_
+
+    const subject = message.getSubject() || '';
+    if (isLikelyNoise_(fromEmail, subject)) {
+      // Still labeled (so it doesn't re-match every run) but NOT saved to
+      // the dashboard and NOT included in the alert email — confirmed noise,
+      // not something anyone needs to look at.
+      thread.addLabel(label);
+      return;
+    }
 
     thread.addLabel(label);
     findings.push(fromHeader + ' | ' + message.getSubject());
