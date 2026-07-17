@@ -901,11 +901,11 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
     return (
       <Fragment key={r.id}>
         {showTeamHeader && (
-          <TableRow className="bg-slate-800 hover:bg-slate-800">
-            <TableCell colSpan={colSpanCount} className="py-2.5 text-sm font-bold text-white">
+          <TableRow className="bg-orange-50 hover:bg-orange-50 border-b border-orange-200">
+            <TableCell colSpan={colSpanCount} className="py-2 text-sm font-bold text-orange-900">
               {agentTeam || "Unassigned"}
               {teamLeaderName && (
-                <span className="ml-2 text-xs font-normal text-slate-300">
+                <span className="ml-2 text-xs font-normal text-orange-600/80">
                   Team Leader: {teamLeaderName}
                 </span>
               )}
