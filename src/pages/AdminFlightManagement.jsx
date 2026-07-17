@@ -841,19 +841,21 @@ export default function AdminFlightManagement() {
   );
 }
 
+const HEADER_CELL_CLASS = "text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70 h-9";
+
 function FlightTableHeader() {
   return (
     <TableHeader>
-      <TableRow>
+      <TableRow className="hover:bg-transparent">
         <TableHead className="w-8"></TableHead>
-        <TableHead>Airline</TableHead>
-        <TableHead>Booking Ref</TableHead>
-        <TableHead>GDX</TableHead>
-        <TableHead>Client</TableHead>
-        <TableHead>Type</TableHead>
-        <TableHead>Route/s</TableHead>
-        <TableHead className="hidden md:table-cell">Departure Date</TableHead>
-        <TableHead className="hidden md:table-cell">Received Date</TableHead>
+        <TableHead className={HEADER_CELL_CLASS}>Airline</TableHead>
+        <TableHead className={HEADER_CELL_CLASS}>Booking Ref</TableHead>
+        <TableHead className={HEADER_CELL_CLASS}>GDX</TableHead>
+        <TableHead className={HEADER_CELL_CLASS}>Client</TableHead>
+        <TableHead className={HEADER_CELL_CLASS}>Type</TableHead>
+        <TableHead className={HEADER_CELL_CLASS}>Route/s</TableHead>
+        <TableHead className={cn(HEADER_CELL_CLASS, "hidden md:table-cell")}>Departure Date</TableHead>
+        <TableHead className={cn(HEADER_CELL_CLASS, "hidden md:table-cell")}>Received Date</TableHead>
       </TableRow>
     </TableHeader>
   );
