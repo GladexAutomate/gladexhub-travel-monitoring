@@ -203,29 +203,45 @@ function runSync_(afterDate, maxThreadsPerAirline) {
       if (batch.length === 0) break;
 
       batch.forEach(function (thread) {
-        const messages = thread.getMessages();
-        let threadHasNetworkError = false;
-        let threadHasParseError = false;
+        // Everything about this thread (fetching its messages, labeling it
+        // afterward) is wrapped in one try/catch — Array.forEach does NOT
+        // catch exceptions from its callback, it propagates them straight
+        // out through the enclosing while loop and the AIRLINES.forEach
+        // above it, aborting the ENTIRE run (every remaining thread, every
+        // remaining airline, and the checkForUnknownAirlineSenders_ safety
+        // net that runs after this loop — since it never gets called if an
+        // exception already unwound out of runSync_). A single
+        // temporarily-inaccessible thread must not be able to silently take
+        // down the whole sync run this way — leave it unlabeled (retried
+        // next run, same as a network_error) and keep going.
+        try {
+          const messages = thread.getMessages();
+          let threadHasNetworkError = false;
+          let threadHasParseError = false;
 
-        messages.forEach(function (message) {
-          let result;
-          try {
-            result = processMessage_(message, airline, supabaseUrl, supabaseKey);
-          } catch (err) {
-            Logger.log('UNEXPECTED ERROR on message ' + message.getId() + ': ' + err);
-            result = 'network_error';
-          }
+          messages.forEach(function (message) {
+            let result;
+            try {
+              result = processMessage_(message, airline, supabaseUrl, supabaseKey);
+            } catch (err) {
+              Logger.log('UNEXPECTED ERROR on message ' + message.getId() + ': ' + err);
+              result = 'network_error';
+            }
 
-          if (result === 'success') saved++;
-          else if (result === 'duplicate') duplicates++;
-          else if (result === 'parse_error') { needsReview++; threadHasParseError = true; }
-          else if (result === 'network_error') { networkErrors++; threadHasNetworkError = true; }
-        });
+            if (result === 'success') saved++;
+            else if (result === 'duplicate') duplicates++;
+            else if (result === 'parse_error') { needsReview++; threadHasParseError = true; }
+            else if (result === 'network_error') { networkErrors++; threadHasNetworkError = true; }
+          });
 
-        // A network error means Supabase may not have received the data yet, so
-        // leave the whole thread unlabeled and let the next run retry it.
-        if (threadHasNetworkError) return;
-        thread.addLabel(threadHasParseError ? needsReviewLabel : processedLabel);
+          // A network error means Supabase may not have received the data yet, so
+          // leave the whole thread unlabeled and let the next run retry it.
+          if (threadHasNetworkError) return;
+          thread.addLabel(threadHasParseError ? needsReviewLabel : processedLabel);
+        } catch (err) {
+          Logger.log('UNEXPECTED ERROR on thread ' + thread.getId() + ' (left unlabeled, will retry next run): ' + err);
+          networkErrors++;
+        }
       });
 
       threadsSeen += batch.length;
@@ -248,7 +264,16 @@ function runSync_(afterDate, maxThreadsPerAirline) {
   // Safety net so a sender change or a brand-new airline is never silently
   // invisible — runs every time this does (so every 5 minutes via
   // fetchNewEmails), not just when someone remembers to check manually.
-  checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey, afterDate);
+  // Wrapped: an uncaught exception in here (e.g. a transient GmailApp
+  // hiccup) must not be allowed to make the WHOLE run report as "failed" —
+  // the per-airline results above already succeeded and shouldn't be
+  // thrown away because the safety net had one bad run. It just tries
+  // again next cycle either way.
+  try {
+    checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey, afterDate);
+  } catch (err) {
+    Logger.log('UNEXPECTED ERROR in checkForUnknownAirlineSenders_ (will retry next run): ' + err);
+  }
 }
 
 /**
