@@ -592,23 +592,21 @@ export default function AdminFlightManagement() {
                 Flight confirmation, reschedule, and cancellation emails synced from Gmail.
               </p>
             </div>
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted text-sm">
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted text-sm mr-1">
                 <UserCircle className="w-4 h-4 text-muted-foreground" />
                 <span className="font-medium">{user?.name || "—"}</span>
                 <Badge variant="outline" className="text-[10px]">{ROLE_LABELS[user?.role] || user?.role}</Badge>
               </div>
-              <Button variant="outline" className="gap-2" onClick={() => refetch()} disabled={isFetching}>
+              <Button variant="outline" size="icon" onClick={() => refetch()} disabled={isFetching} title="Refresh">
                 <RefreshCw className={cn("w-4 h-4", isFetching && "animate-spin")} />
-                Refresh
               </Button>
               {/* Opens in a new tab so the TV device can navigate straight to
                   that URL and be left open indefinitely — no mouse/keyboard
                   needed there after the one-time login. */}
-              <Button variant="outline" className="gap-2" asChild>
+              <Button variant="outline" size="icon" asChild title="TV Display">
                 <a href="/admin/flight-tracker-tv" target="_blank" rel="noopener noreferrer">
                   <Tv className="w-4 h-4" />
-                  TV Display
                 </a>
               </Button>
               <Button variant="outline" className="gap-2" onClick={handleLogout}>
@@ -620,12 +618,12 @@ export default function AdminFlightManagement() {
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <StatCard label="Total Flights" value={stats.total} icon={Plane} />
-            <StatCard label="Confirmations" value={stats.confirmation} icon={CheckCircle2} accent="text-emerald-600" />
-            <StatCard label="Reschedules" value={stats.reschedule} icon={RotateCcw} accent="text-orange-600" />
-            <StatCard label="Cancellations" value={stats.cancellation} icon={XCircle} accent="text-red-600" />
+            <StatCard label="Confirmations" value={stats.confirmation} icon={CheckCircle2} accent="text-emerald-600" iconBg="bg-emerald-50" />
+            <StatCard label="Reschedules" value={stats.reschedule} icon={RotateCcw} accent="text-orange-600" iconBg="bg-orange-50" />
+            <StatCard label="Cancellations" value={stats.cancellation} icon={XCircle} accent="text-red-600" iconBg="bg-red-50" />
           </div>
 
-          <Card className="border-0 shadow-md">
+          <Card className="border-0 shadow-sm">
             <CardHeader className="pb-3">
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
                 <CardTitle className="text-base font-display">Flight Emails ({filtered.length})</CardTitle>
@@ -776,7 +774,7 @@ export default function AdminFlightManagement() {
             </CardContent>
           </Card>
 
-          <Card className="border-0 shadow-md">
+          <Card className="border-0 shadow-sm">
             <CardHeader className="pb-3">
               <button
                 className="flex items-center justify-between w-full text-left"
@@ -1059,15 +1057,17 @@ function PaginationBar({ range, total, page, pageCount, onPrev, onNext }) {
   );
 }
 
-function StatCard({ label, value, icon: Icon, accent = "text-foreground" }) {
+function StatCard({ label, value, icon: Icon, accent = "text-orange-600", iconBg = "bg-orange-50" }) {
   return (
-    <Card className="border-0 shadow-md">
-      <CardContent className="p-4 flex items-center justify-between">
-        <div>
-          <p className="text-xs text-muted-foreground">{label}</p>
-          <p className={cn("text-2xl font-display font-bold mt-1", accent)}>{value}</p>
+    <Card className="border-0 shadow-sm">
+      <CardContent className="p-5 flex items-center gap-4">
+        <div className={cn("w-11 h-11 rounded-xl flex items-center justify-center shrink-0", iconBg)}>
+          <Icon className={cn("w-5 h-5", accent)} />
         </div>
-        <Icon className={cn("w-8 h-8 opacity-70", accent)} />
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{label}</p>
+          <p className={cn("text-2xl font-display font-bold leading-tight tabular-nums", accent)}>{value}</p>
+        </div>
       </CardContent>
     </Card>
   );
