@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Navigate } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
 import { useAuth } from "@/hooks/useAuth";
 import FlightTrackerSidebar from "@/components/FlightTrackerSidebar";
@@ -32,8 +32,27 @@ const ROLE_LABELS = {
 const ROLE_FILTERS = ["all", "agent", "team_leader", "hr", "admin", "super_admin"];
 const STATUS_FILTERS = ["all", "active", "inactive"];
 
+// Hoisted above the component so it isn't recreated (and remounted by
+// React) on every render — sortKey/sortDir/onToggle come in as props
+// instead of being closed over.
+function SortableHead({ sortField, sortKey, sortDir, onToggle, children }) {
+  const active = sortKey === sortField;
+  return (
+    <TableHead
+      className="cursor-pointer select-none whitespace-nowrap"
+      onClick={() => onToggle(sortField)}
+    >
+      <span className="inline-flex items-center gap-1">
+        {children}
+        {active && (sortDir === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}
+      </span>
+    </TableHead>
+  );
+}
+
 export default function EmployeeAccounts() {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -89,11 +108,19 @@ export default function EmployeeAccounts() {
           targetId: account.id,
           ...patch,
         });
+        return { account, patch };
       } catch (err) {
         throw new Error(err.response?.data?.error || err.message);
       }
     },
-    onSuccess: () => refetch(),
+    // Patch just this row in the cache instead of refetching the whole
+    // employee list (which itself re-scans every employee server-side) for
+    // a one-field change.
+    onSuccess: ({ account, patch }) => {
+      queryClient.setQueryData(["synced_employee_list"], (old) =>
+        (old || []).map((a) => (a.id === account.id ? { ...a, ...patch } : a))
+      );
+    },
     onError: (err) => alert(`Failed to update: ${err.message}`),
   });
 
@@ -129,21 +156,6 @@ export default function EmployeeAccounts() {
       setSortKey(key);
       setSortDir("asc");
     }
-  }
-
-  function SortableHead({ sortField, children }) {
-    const active = sortKey === sortField;
-    return (
-      <TableHead
-        className="cursor-pointer select-none whitespace-nowrap"
-        onClick={() => toggleSort(sortField)}
-      >
-        <span className="inline-flex items-center gap-1">
-          {children}
-          {active && (sortDir === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}
-        </span>
-      </TableHead>
-    );
   }
 
   function copyCredentials() {
@@ -229,11 +241,11 @@ export default function EmployeeAccounts() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <SortableHead sortField="full_name">Name</SortableHead>
-                    <SortableHead sortField="employee_code">Employee ID</SortableHead>
+                    <SortableHead sortField="full_name" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort}>Name</SortableHead>
+                    <SortableHead sortField="employee_code" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort}>Employee ID</SortableHead>
                     <TableHead>Department</TableHead>
-                    <SortableHead sortField="role">Role</SortableHead>
-                    <SortableHead sortField="is_active">Status</SortableHead>
+                    <SortableHead sortField="role" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort}>Role</SortableHead>
+                    <SortableHead sortField="is_active" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort}>Status</SortableHead>
                     <TableHead className="text-right">Action</TableHead>
                   </TableRow>
                 </TableHeader>

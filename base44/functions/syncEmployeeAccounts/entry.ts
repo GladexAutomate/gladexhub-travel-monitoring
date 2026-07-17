@@ -77,10 +77,18 @@ Deno.serve(async (req) => {
 
     // The API only returns active employees — when someone becomes inactive
     // they disappear from the response entirely. We upsert by email and
-    // delete any cached record that's absent from this sync. A deleted
-    // record means validateSession returns valid:false (kicking them out
-    // of any active session), and employeeLogin checks the API directly so
-    // they can't log back in.
+    // soft-deactivate (is_active: false) any cached record that's absent
+    // from this sync — NOT a hard delete. A hard delete would destroy
+    // role_override/is_active_override/password_override_hash on that row;
+    // if the employee later reappears in the API (a pagination glitch, a
+    // transient short response, or a real reactivation), they'd come back
+    // through the toCreate path as a brand-new row with every admin
+    // override silently and permanently lost. Soft-deactivating still kicks
+    // them out (validateSession/employeeLogin both resolve is_active via
+    // is_active_override ?? is_active, so this correctly blocks login) while
+    // preserving the row — and preserving it means an explicit
+    // is_active_override=true would correctly keep them logged-in-able
+    // through a spurious API gap, which a hard delete could never do.
     const existing = await base44.asServiceRole.entities.SyncedEmployee.list();
     const existingByEmail = {};
     existing.forEach((e) => { existingByEmail[e.email] = e; });
@@ -122,23 +130,24 @@ Deno.serve(async (req) => {
       }
     });
 
-    // Delete any cached employee no longer in the API response (deactivated).
-    const staleIds = Object.values(existingByEmail)
+    // Soft-deactivate any cached employee no longer in the API response —
+    // see the comment above for why this is an update, not a delete.
+    const staleUpdates = Object.values(existingByEmail)
       .filter((e) => !apiEmails.has(e.email))
-      .map((e) => e.id);
+      .map((e) => ({ id: e.id, is_active: false }));
 
     // Independent, disjoint ID sets — no ordering dependency between them.
     await Promise.all([
       toCreate.length > 0 ? base44.asServiceRole.entities.SyncedEmployee.bulkCreate(toCreate) : null,
       toUpdate.length > 0 ? base44.asServiceRole.entities.SyncedEmployee.bulkUpdate(toUpdate) : null,
-      staleIds.length > 0 ? base44.asServiceRole.entities.SyncedEmployee.deleteMany({ id: { $in: staleIds } }) : null,
+      staleUpdates.length > 0 ? base44.asServiceRole.entities.SyncedEmployee.bulkUpdate(staleUpdates) : null,
     ]);
 
     return Response.json({
       synced: list.length,
       created: toCreate.length,
       updated: toUpdate.length,
-      deleted: staleIds.length,
+      deactivated: staleUpdates.length,
     });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
