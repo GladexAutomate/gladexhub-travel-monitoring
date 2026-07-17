@@ -56,6 +56,12 @@ const CONFIG = {
   // sending address, or a genuinely new airline) so it's still visible
   // instead of silently never matching any AIRLINES[].senderQuery.
   LABEL_UNKNOWN_SENDER: 'UnknownAirlineSender',
+  // How far back the LIVE (fetchNewEmails) safety-net check looks when no
+  // explicit afterDate is given — see checkForUnknownAirlineSenders_. Keeps
+  // every 5-10 minute run bounded to "what's genuinely new", instead of
+  // resweeping the entire mailbox history (which flooded the inbox with a
+  // fresh alert email every single cycle for days — see the fix comment).
+  LIVE_SAFETY_NET_LOOKBACK_DAYS: 3,
 };
 
 // Each entry: { name, senderQuery, detectEmailType, parseBookingRef, parseFlights }.
@@ -154,6 +160,16 @@ function fetchAllHistoricalEmails() {
  */
 function fetchNewEmails() {
   runSync_(null, CONFIG.NEW_EMAILS_MAX_THREADS);
+}
+
+// Gmail search "after:" wants YYYY/MM/DD. Used to bound the live safety
+// net's lookback window (see CONFIG.LIVE_SAFETY_NET_LOOKBACK_DAYS).
+function dateNDaysAgo_(days) {
+  const d = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return y + '/' + m + '/' + day;
 }
 
 function buildQuery_(airline, afterDate) {
@@ -347,14 +363,25 @@ function checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey, afterDate) {
     ' -label:' + CONFIG.LABEL_UNKNOWN_SENDER +
     ' -label:' + CONFIG.LABEL_PROCESSED +
     ' -label:' + CONFIG.LABEL_NEEDS_REVIEW;
-  // Same cutoff as the per-airline loop (buildQuery_) — without it, a full
-  // historical backfill run dredges up years-old, long-since-resolved
-  // internal correspondence (rebooking requests from 2024, etc.) that's
-  // just noise today. fetchNewEmails passes afterDate=null, so the 5-minute
-  // trigger is unaffected — a new email is always recent anyway.
-  if (afterDate) {
-    query += ' after:' + afterDate;
-  }
+  // CRITICAL: unlike the per-airline loop (which searches by specific known
+  // sender, so "afterDate=null means it's always recent" genuinely holds),
+  // this searches ALL senders across ALL of Gmail history. Passing through
+  // fetchNewEmails' afterDate=null unmodified (as an earlier version of this
+  // function did) meant the live 5-minute trigger re-swept the ENTIRE
+  // mailbox history every single run — with a large multi-year backlog of
+  // unconfigured senders (RAKSO, TBO Air, 2GO, etc.), that's thousands of
+  // threads at 200/run, meaning an alert email fired on every 5-10 minute
+  // cycle for potentially days before draining. This is a live-inbox-flooding
+  // bug, found and fixed after it actually happened.
+  //
+  // Fix: when called with no explicit afterDate (the fetchNewEmails/live
+  // case), fall back to a short, fixed lookback window instead of "no limit
+  // at all" — this function's actual job for that caller is "did something
+  // NEW just arrive", not "sweep all of history every cycle". The
+  // fetchAllHistoricalEmails case (a deliberate, occasional, manual
+  // operation) still passes its own real afterDate through unrestricted.
+  const effectiveAfterDate = afterDate || dateNDaysAgo_(CONFIG.LIVE_SAFETY_NET_LOOKBACK_DAYS);
+  query += ' after:' + effectiveAfterDate;
   const threads = GmailApp.search(query, 0, 200);
 
   const findings = [];
