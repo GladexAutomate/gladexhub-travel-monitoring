@@ -1000,24 +1000,6 @@ function resetNeedsReviewEmails() {
 }
 
 /**
- * Run this ONCE if flight_emails was ever pointed at a DIFFERENT Supabase
- * project before (e.g. an earlier Sales-project setup) — any thread this
- * script already labeled "Processed" back then is permanently invisible to
- * every runSync_ query (they all search "-label:Processed"), so switching
- * the SUPABASE_URL/SUPABASE_KEY Script Properties to a new project does NOT
- * bring that history along; those emails just get silently skipped forever.
- *
- * This removes the Processed label from every thread so the next
- * fetchAllHistoricalEmails does a full re-scan into whatever project is
- * currently configured. Safe to run even if nothing was actually missed —
- * saveToSupabase_ upserts on gmail_message_id with ignore-duplicates, so
- * anything already in the target table just logs as DUPLICATE, no harm.
- * This WILL take a while and re-send every historical email through
- * Supabase again — expect a long run needing several manual re-runs of
- * fetchAllHistoricalEmails to fully drain (each run stops cleanly at the
- * ~5 minute mark and picks up where it left off next time).
- */
-/**
  * Diagnostic — run this once to find out (a) how many AirAsia emails from
  * noreplycustsupport@airasia.com actually exist in this mailbox with NO
  * label filter (so a stale Processed/NeedsReview label from an old run
@@ -1054,6 +1036,24 @@ function debugFindMissingEmailTypes() {
   });
 }
 
+/**
+ * Run this ONCE if flight_emails was ever pointed at a DIFFERENT Supabase
+ * project before (e.g. an earlier Sales-project setup) — any thread this
+ * script already labeled "Processed" back then is permanently invisible to
+ * every runSync_ query (they all search "-label:Processed"), so switching
+ * the SUPABASE_URL/SUPABASE_KEY Script Properties to a new project does NOT
+ * bring that history along; those emails just get silently skipped forever.
+ *
+ * This removes the Processed label from every thread so the next
+ * fetchAllHistoricalEmails does a full re-scan into whatever project is
+ * currently configured. Safe to run even if nothing was actually missed —
+ * saveToSupabase_ upserts on gmail_message_id with ignore-duplicates, so
+ * anything already in the target table just logs as DUPLICATE, no harm.
+ * This WILL take a while and re-send every historical email through
+ * Supabase again — expect a long run needing several manual re-runs of
+ * fetchAllHistoricalEmails to fully drain (each run stops cleanly at the
+ * ~5 minute mark and picks up where it left off next time).
+ */
 function resetAllProcessedEmails() {
   const label = GmailApp.getUserLabelByName(CONFIG.LABEL_PROCESSED);
   if (!label) {
