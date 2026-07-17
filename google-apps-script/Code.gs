@@ -327,18 +327,29 @@ function parseCebuPacificFlights_(body) {
 }
 
 // ============================================================
-// AirAsia — verified against a real "Flight Reschedule Notice" email from
-// noreplycustsupport@airasia.com. This sender only sends reschedule notices
-// to this mailbox (no confirmation/cancellation sample seen yet) — if one
-// shows up, detectAirAsiaType_ below will flag it as "confirmation"/
-// "cancellation" but parseAirAsiaFlights_ may not match its layout, so it'll
-// land in NeedsReview for manual follow-up rather than silently mis-parsing.
+// AirAsia — verified against real emails from noreplycustsupport@airasia.com.
+// This sender only sends reschedule/reroute/cancellation notices to this
+// mailbox (no fresh booking confirmation sample seen yet — bookings are made
+// by agents directly, not by the customer receiving a confirmation email
+// here) — three known layouts, all handled by parseAirAsiaFlights_:
+//   1. "Flight Reschedule Notice" — same flight number, route repeated
+//      before an original block and a revised block (Layout A/B below).
+//   2. "Extended Flight Change Option" — a reroute to a different airport;
+//      two different flight numbers/routes close together, each appearing
+//      once (falls out of the same loop as two separate legs).
+//   3. "Flight Cancellation Notice" — no Flight Number/Depart date block at
+//      all, just a narrative sentence (handled by the fallback regex).
+// If a genuinely new layout shows up, it'll land in NeedsReview for manual
+// follow-up rather than silently mis-parsing.
 // ============================================================
 
 function detectAirAsiaType_(subject, body) {
   const subj = subject.toLowerCase();
   if (subj.indexOf('cancel') !== -1) return 'cancellation';
-  if (subj.indexOf('reschedule') !== -1) return 'reschedule';
+  // "Important Update: Extended Flight Change Option..." is a reroute
+  // notice — same family as a reschedule, just a different subject phrasing
+  // (verified against a real sample: no "reschedule" word in the subject at all).
+  if (subj.indexOf('reschedule') !== -1 || subj.indexOf('flight change') !== -1) return 'reschedule';
   if (subj.indexOf('confirmation') !== -1 || subj.indexOf('itinerary') !== -1 || subj.indexOf('e-ticket') !== -1) return 'confirmation';
   return null;
 }
@@ -386,12 +397,26 @@ function parseAirAsiaFlights_(body) {
   // original_* fields hold the pre-reschedule time so the admin UI can show
   // a before/after comparison — only set when an original block was
   // actually found and its time differs from the revised one.
+  //
+  // A third real layout (subject "Important Update: Extended Flight Change
+  // Option...") reroutes to a DIFFERENT airport entirely — two separate
+  // "Flight Number:" blocks with two DIFFERENT flight numbers/routes close
+  // together (original leg, then new leg), not the same flight number
+  // repeated. That case falls out of this same loop as two independent
+  // single-occurrence groups — captured as two legs rather than merged into
+  // one before/after comparison, which is an acceptable simplification for
+  // an uncommon case (the flight actually is captured, not silently dropped).
   const flights = [];
-  const flightNoRegex = /Flight\s*[Nn]umber\s*:\s*([A-Z]{1,2}\s*\d{2,4})/gi;
+  // [A-Z0-9] (not just [A-Z]) for the code portion — AirAsia's own airline
+  // code is alphanumeric ("Z2"), and real samples show it both jammed
+  // against the flight number ("Z2711") and with a space before it
+  // ("Z2 426") — a letters-only code class fails to match the latter since
+  // only one digit is left before the space, short of \d{2,4}'s minimum.
+  const flightNoRegex = /Flight\s*[Nn]umber\s*:\s*([A-Z0-9]{1,2}\s*\d{2,4})/gi;
   // Route can appear right before the flight number (Layout A, tight
   // backward window) or much earlier in an intro paragraph (Layout B) — the
   // wide 600-char backward window covers both without needing two regexes.
-  const routeRegex = /\(([A-Z]{3})\)\s*(?:to|-|–)\s*[^(]*\(([A-Z]{3})\)/i;
+  const routeRegex = /\(([A-Z]{3})\)\s*(?:to|-|–)\s*[^(]*\(([A-Z]{3})\)/gi;
   // Layout A: "Depart date: 03-Aug-2026". Layout B: "Departure Date : 10 Jul, 2026".
   const dateRegex = /Depart(?:ure)? [Dd]ate\s*:\s*(\d{1,2}[-\s][A-Za-z]{3,9},?[-\s]\d{4})/i;
   // Layout A: "Depart: 20:45hrs". Layout B: "Depart from Manila Int'l(MNL) : 09:30hrs".
@@ -413,10 +438,25 @@ function parseAirAsiaFlights_(body) {
     (occurrencesByFlightNo[fm.text] = occurrencesByFlightNo[fm.text] || []).push(fm);
   });
 
+  // Returns the LAST match in the string, not the first — when a reroute
+  // email states two different routes close together (original block, then
+  // new block), the naive first-match-in-window approach would misattribute
+  // the earlier (original) route to the later flight number every time.
+  // Taking the last/closest match still works for the single-route cases
+  // (Layout A/B), since there's only one candidate there either way.
+  function lastMatchIn(text, regex) {
+    let last = null;
+    let mm;
+    while ((mm = regex.exec(text)) !== null) {
+      last = mm;
+    }
+    return last;
+  }
+
   function extractLegAt(fm) {
     const routeWindowStart = Math.max(0, fm.index - 600);
     const routeWin = body.slice(routeWindowStart, fm.index);
-    const routeMatch = routeWin.match(routeRegex);
+    const routeMatch = lastMatchIn(routeWin, new RegExp(routeRegex.source, 'gi'));
 
     const fwdWindowEnd = Math.min(body.length, fm.index + 300);
     const fwdWin = body.slice(fm.index, fwdWindowEnd);
@@ -456,6 +496,33 @@ function parseAirAsiaFlights_(body) {
       original_arrival_time: timeChanged ? original.arriveTime : null,
     });
   });
+
+  if (flights.length > 0) return flights;
+
+  // Fallback: cancellation notices have no "Flight Number:"/"Depart date:"
+  // block structure at all — just a narrative sentence. Verified against a
+  // real sample:
+  //   "...your flight Z2 426 scheduled to depart from Ninoy Aquino
+  //   International Airport (MNL) to Puerto Princesa International Airport
+  //   (PPS) on 27-Dec-2026 has been cancelled."
+  // No specific time is ever given for a cancelled flight, only the date.
+  const cancelMatch = body.match(
+    /your flight\s+([A-Z0-9]{1,2}\s*\d{2,4})\s+scheduled to depart from\s+[^(]*\(([A-Z]{3})\)\s*to\s+[^(]*\(([A-Z]{3})\)\s+on\s+(\d{1,2}-[A-Za-z]{3}-\d{4})\s+has been cancelled/i
+  );
+  if (cancelMatch) {
+    flights.push({
+      route: cancelMatch[2].toUpperCase() + '-' + cancelMatch[3].toUpperCase(),
+      flight_no: cancelMatch[1].toUpperCase().replace(/\s+/, ' '),
+      origin: cancelMatch[2].toUpperCase(),
+      destination: cancelMatch[3].toUpperCase(),
+      departure_date: normalizeDate_(cancelMatch[4]),
+      departure_time: null,
+      arrival_date: normalizeDate_(cancelMatch[4]),
+      arrival_time: null,
+      original_departure_time: null,
+      original_arrival_time: null,
+    });
+  }
 
   return flights;
 }
@@ -621,8 +688,12 @@ function detectPALType_(subject, body) {
   const subj = subject.toLowerCase();
   const bod = body.toLowerCase();
   if (subj.indexOf('cancel') !== -1 || bod.indexOf('has been cancelled') !== -1) return 'cancellation';
-  if (subj.indexOf('reschedul') !== -1 || subj.indexOf('rebook') !== -1) return 'reschedule';
-  if (subj.indexOf('boarding pass') !== -1 || subj.indexOf('check') !== -1 || subj.indexOf('itinerary') !== -1 || subj.indexOf('confirmation') !== -1) return 'confirmation';
+  // "Your Flight Change is Confirmed - ..." is a reschedule, not a fresh
+  // booking confirmation — verified against a real sample. Checked before
+  // the confirm check below since that subject also contains "confirmed".
+  if (subj.indexOf('reschedul') !== -1 || subj.indexOf('rebook') !== -1 || subj.indexOf('flight change') !== -1) return 'reschedule';
+  // 'confirm' (not just 'confirmation') so "...is Confirmed" subjects match too.
+  if (subj.indexOf('boarding pass') !== -1 || subj.indexOf('check') !== -1 || subj.indexOf('itinerary') !== -1 || subj.indexOf('confirm') !== -1) return 'confirmation';
   return null;
 }
 
