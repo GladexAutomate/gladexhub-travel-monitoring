@@ -298,18 +298,7 @@ function checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey) {
     findings.push(fromHeader + ' | ' + message.getSubject());
 
     if (supabaseUrl && supabaseKey) {
-      const subject = message.getSubject() || '(no subject)';
-      saveToSupabase_({
-        airline: fromHeader,
-        // No real booking ref exists for an unparsed email — the subject
-        // line at least makes the row findable/recognizable in the admin
-        // UI's search box, which searches booking_ref among other fields.
-        booking_ref: subject.slice(0, 120),
-        email_type: 'needs_attention',
-        flights: [],
-        received_date: message.getDate().toISOString(),
-        gmail_message_id: message.getId(),
-      }, supabaseUrl, supabaseKey);
+      saveNeedsAttentionRow_(message, fromHeader, supabaseUrl, supabaseKey);
     }
   });
 
@@ -330,6 +319,30 @@ function checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey) {
     'in Gmail so they won\'t repeat this alert. Pull a real sample (see debugLogSample() ' +
     'in Code.gs) and add a proper AIRLINES entry once you confirm the format.';
   MailApp.sendEmail(Session.getActiveUser().getEmail(), 'Flight Tracker: unrecognized airline sender(s) found', alertBody);
+}
+
+/**
+ * Saves a bare placeholder row to flight_emails — no parsed flight details,
+ * just enough to be visible/searchable in the admin dashboard (booking_ref
+ * holds the raw subject line). Used for two cases that would otherwise be
+ * invisible outside of a Gmail label: an unrecognized sender (see
+ * checkForUnknownAirlineSenders_), and a KNOWN sender's email that we
+ * correctly detected as a reschedule/cancellation but couldn't parse the
+ * flight details from (see processMessage_) — the label/name/routing may
+ * still change even though we don't have the specifics, so it still needs
+ * to be someone's attention, not just sit in NeedsReview where only Gmail
+ * shows it.
+ */
+function saveNeedsAttentionRow_(message, airlineLabel, supabaseUrl, supabaseKey) {
+  const subject = message.getSubject() || '(no subject)';
+  return saveToSupabase_({
+    airline: airlineLabel,
+    booking_ref: subject.slice(0, 120),
+    email_type: 'needs_attention',
+    flights: [],
+    received_date: message.getDate().toISOString(),
+    gmail_message_id: message.getId(),
+  }, supabaseUrl, supabaseKey);
 }
 
 function processMessage_(message, airline, supabaseUrl, supabaseKey) {
@@ -357,6 +370,17 @@ function processMessage_(message, airline, supabaseUrl, supabaseKey) {
       'PARSE ERROR: could not extract booking_ref/flights from "' + subject + '" [' + gmailMessageId + ']' +
       ' (bookingRef=' + bookingRef + ', flights found=' + flights.length + ')'
     );
+    // A confirmed reschedule/cancellation we failed to parse the details of
+    // is exactly the case that can't afford to go unnoticed — save it to
+    // the dashboard too, not just the Gmail NeedsReview label, so someone
+    // sees "this booking's flight changed" even without the specifics.
+    // Confirmations are excluded: a failed-to-parse confirmation is just a
+    // duplicate/reminder about an already-known booking, lower stakes, and
+    // including them would flood the dashboard (see the check-in-reminder
+    // volume from PAL, e.g.) with low-value noise.
+    if ((emailType === 'reschedule' || emailType === 'cancellation') && supabaseUrl && supabaseKey) {
+      saveNeedsAttentionRow_(message, airline.name + ' (' + emailType + ', unparsed)', supabaseUrl, supabaseKey);
+    }
     return 'parse_error';
   }
 
@@ -818,6 +842,11 @@ function detectPALType_(subject, body) {
   // checked first since they're unambiguous and don't need the body at all.
   if (subj.indexOf('cancellation advisory') !== -1) return 'cancellation';
   if (subj.indexOf('schedule change advisory') !== -1) return 'reschedule';
+  // "Your Flight PR2533 ... Schedule Has Been Changed" — a real, high-volume
+  // subject format from no-reply@philippineairlines.com found via a live
+  // sync run (was falling through to null/unrecognized entirely, meaning
+  // these genuine reschedule notices were invisible before this).
+  if (subj.indexOf('schedule has been changed') !== -1) return 'reschedule';
   if (subj.indexOf('cancel') !== -1 || bod.indexOf('has been cancelled') !== -1) return 'cancellation';
   // "Your Flight Change is Confirmed - ..." is a reschedule, not a fresh
   // booking confirmation — verified against a real sample. Checked before
