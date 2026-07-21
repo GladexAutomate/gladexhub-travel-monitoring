@@ -346,10 +346,20 @@ function checkSyncHeartbeat_() {
     return;
   }
 
+  sendHeartbeatAlert_(lastRun, false);
+  props.setProperty('HEARTBEAT_ALERT_SENT_FOR', lastRun);
+}
+
+function sendHeartbeatAlert_(lastRun, isDemo) {
+  const subjectPrefix = isDemo ? '[DEMO — not a real alert] ' : '';
   MailApp.sendEmail(
     Session.getActiveUser().getEmail(),
-    '🚨 Flight Tracker sync appears to have stopped',
-    'The Gmail-to-Supabase flight email sync has not completed successfully in over ' +
+    subjectPrefix + '🚨 Flight Tracker sync appears to have stopped',
+    (isDemo
+      ? 'THIS IS A DEMO — sent manually via testHeartbeatAlert_demo() so you can see exactly ' +
+        'what the real alert looks like. No real outage is happening; nothing was changed.\n\n'
+      : '') +
+      'The Gmail-to-Supabase flight email sync has not completed successfully in over ' +
       CONFIG.HEARTBEAT_STALE_MINUTES + ' minutes (last successful run: ' + lastRun + ').\n\n' +
       'This usually means one of:\n' +
       '- The fetchNewEmails time-based trigger was deleted or disabled\n' +
@@ -358,7 +368,19 @@ function checkSyncHeartbeat_() {
       'Check the Apps Script project\'s Executions page and Triggers page to diagnose. ' +
       'You will not get another one of these alerts until the sync recovers and then goes stale again.'
   );
-  props.setProperty('HEARTBEAT_ALERT_SENT_FOR', lastRun);
+}
+
+/**
+ * Run this manually ANY TIME to see exactly what the real stale-sync alert
+ * email looks like, without touching real heartbeat state at all (doesn't
+ * read or write LAST_SUCCESSFUL_RUN/HEARTBEAT_ALERT_SENT_FOR) — safe to run
+ * even while the real sync is healthy. Uses a fake "25 minutes ago"
+ * timestamp just for the email's own text.
+ */
+function testHeartbeatAlert_demo() {
+  const fakeLastRun = new Date(Date.now() - 25 * 60 * 1000).toISOString();
+  sendHeartbeatAlert_(fakeLastRun, true);
+  Logger.log('Sent a demo heartbeat alert to ' + Session.getActiveUser().getEmail() + ' — check your inbox.');
 }
 
 /**
