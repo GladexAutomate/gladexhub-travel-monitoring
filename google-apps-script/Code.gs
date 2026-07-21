@@ -67,6 +67,13 @@ const CONFIG = {
   // fetchNewEmails runs every 5-10 min, so this allows a few missed cycles
   // before alerting, to avoid a false alarm over one unlucky slow run.
   HEARTBEAT_STALE_MINUTES: 20,
+  // MailApp.getRemainingDailyQuota() is the one Google-provided way to see
+  // a real remaining-quota number from inside Apps Script (URL Fetch calls
+  // and total runtime don't expose an equivalent). Warn once it drops this
+  // low, since every alert this whole file sends (unknown senders, this
+  // heartbeat) shares the same daily email quota as everything else the
+  // script account sends.
+  EMAIL_QUOTA_WARNING_THRESHOLD: 20,
 };
 
 // Each entry: { name, senderQuery, detectEmailType, parseBookingRef, parseFlights }.
@@ -314,6 +321,35 @@ function recordHeartbeat_() {
 }
 
 /**
+ * Warns once per day (per remaining-count value, so it won't repeat every
+ * 30 minutes) if the Gmail account's daily email-sending quota is running
+ * low — every alert this file sends (unknown senders, this heartbeat) draws
+ * from the SAME quota as anything else this account sends, so this running
+ * out would silently disable every alert in this file at once.
+ */
+function checkEmailQuota_() {
+  const remaining = MailApp.getRemainingDailyQuota();
+  Logger.log('checkEmailQuota_: ' + remaining + ' email(s) left in today\'s quota.');
+  if (remaining > CONFIG.EMAIL_QUOTA_WARNING_THRESHOLD) return;
+
+  const props = PropertiesService.getScriptProperties();
+  const alreadyWarnedToday = props.getProperty('QUOTA_WARNING_SENT_FOR') === String(remaining);
+  if (alreadyWarnedToday) return;
+
+  MailApp.sendEmail(
+    Session.getActiveUser().getEmail(),
+    '⚠️ Flight Tracker: email quota running low (' + remaining + ' left today)',
+    'This Google account has only ' + remaining + ' outgoing email(s) left in its daily quota. ' +
+      'Every alert this system sends (unrecognized senders, this heartbeat check) uses that same ' +
+      'quota — once it hits 0, those alerts stop silently until the quota resets (Google resets it ' +
+      'daily). If this account is on a free/personal Gmail plan (100/day) rather than Google ' +
+      'Workspace (1,500/day), consider whether a Workspace upgrade is worth it — this account\'s ' +
+      'quota can\'t be purchased or increased any other way.'
+  );
+  props.setProperty('QUOTA_WARNING_SENT_FOR', String(remaining));
+}
+
+/**
  * Independent watchdog — put this on its OWN time-based trigger (see
  * installHeartbeatTrigger below), separate from fetchNewEmails' trigger, so
  * it keeps working even if fetchNewEmails' own trigger is the thing that
@@ -324,6 +360,8 @@ function recordHeartbeat_() {
  * doesn't spam the same way the unknown-sender bug once did.
  */
 function checkSyncHeartbeat_() {
+  checkEmailQuota_(); // independent of sync health — runs every time regardless
+
   const props = PropertiesService.getScriptProperties();
   const lastRun = props.getProperty('LAST_SUCCESSFUL_RUN');
   const alreadyAlerted = props.getProperty('HEARTBEAT_ALERT_SENT_FOR') === lastRun;
