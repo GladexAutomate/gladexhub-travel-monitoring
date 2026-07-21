@@ -81,6 +81,19 @@ export default function FlightTrackerTV() {
   const { user } = useAuth();
   const [now, setNow] = useState(() => new Date());
   const [soundEnabled, setSoundEnabled] = useState(() => localStorage.getItem(SOUND_ENABLED_KEY) === "true");
+  // Tracked separately from soundEnabled (which persists in localStorage and
+  // stays true forever once tapped once) — fullscreen itself does NOT
+  // persist, so exiting it (remote's back button, Escape, closing an
+  // overlay) left no way back in: the tap button only ever showed while
+  // soundEnabled was still false. Listening for the real fullscreenchange
+  // event means the button reappears every time fullscreen is lost, not
+  // just the very first time.
+  const [isFullscreen, setIsFullscreen] = useState(() => !!document.fullscreenElement);
+  useEffect(() => {
+    const onFullscreenChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
   const [newlySeenIds, setNewlySeenIds] = useState(() => new Set());
   const seenIdsRef = useRef(null); // null until the first successful fetch, so nothing "flashes" on initial load
 
@@ -179,15 +192,24 @@ export default function FlightTrackerTV() {
           landing on the button, etc.) the dashboard itself must still be
           fully visible and usable underneath. Sound/fullscreen are a nice-to-
           have layered on top, never a gate in front of the actual feature. */}
-      {!soundEnabled && (
-        <button
-          onClick={startDisplay}
-          autoFocus
-          className="fixed top-6 right-6 z-50 flex items-center gap-2 px-5 py-3 rounded-xl bg-orange-600 hover:bg-orange-500 transition-colors text-white shadow-lg shadow-black/40"
-        >
-          <Volume2 className="w-5 h-5" />
-          <span className="font-semibold">Tap for sound + full-screen</span>
-        </button>
+      {/* Centered like a real prompt (not a tucked-away corner button) so it's
+          unmissable from across a room and easy to land a remote's OK button
+          on — the semi-transparent backdrop doesn't intercept clicks/taps
+          (pointer-events-none) so the dashboard underneath stays fully
+          visible and usable even if a remote somehow never reaches the
+          button (same non-blocking guarantee as before). */}
+      {!isFullscreen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 pointer-events-none">
+          <button
+            onClick={startDisplay}
+            autoFocus
+            className="pointer-events-auto flex flex-col items-center gap-3 px-10 py-8 rounded-2xl bg-orange-600 hover:bg-orange-500 transition-colors text-white shadow-2xl shadow-black/60 focus:outline-none focus:ring-4 focus:ring-orange-300"
+          >
+            <Volume2 className="w-10 h-10" />
+            <span className="font-bold text-2xl">Press OK to start display</span>
+            <span className="text-sm font-medium text-orange-100">{soundEnabled ? "Full-screen" : "Sound + full-screen"}</span>
+          </button>
+        </div>
       )}
 
       <div className="flex items-center justify-between">
