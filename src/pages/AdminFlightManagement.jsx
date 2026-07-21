@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { base44 } from "@/api/base44Client";
+import { invokeApi } from "@/lib/vercelApi";
 import { useAuth, ADMIN_LIKE_ROLES } from "@/hooks/useAuth";
 import FlightTrackerSidebar from "@/components/FlightTrackerSidebar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -96,10 +96,10 @@ function inferTripType(legs) {
 // blob) so the rest of the page's enrichment logic doesn't change. Batching
 // is handled server-side.
 //
-// base44.functions.invoke() rejects (throws) on any non-2xx response rather
-// than resolving with the error in response.data — so the real backend
-// message (e.g. "Account deactivated") only surfaces if we read it out of
-// the rejected error here, not by checking response.data.error on success.
+// invokeApi() rejects (throws) on any non-2xx response rather than
+// resolving with the error in response.data — so the real backend message
+// (e.g. "Account deactivated") only surfaces if we read it out of the
+// rejected error here, not by checking response.data.error on success.
 function invokeError(err) {
   return new Error(err.response?.data?.error || err.message);
 }
@@ -107,7 +107,7 @@ function invokeError(err) {
 async function selectFusiooByJsonbField(table, field, values, requesterEmail) {
   if (!values || values.length === 0) return [];
   try {
-    const response = await base44.functions.invoke('querySupabase', {
+    const response = await invokeApi('querySupabase', {
       project: 'fusioo',
       table,
       operation: 'filterJsonbIn',
@@ -124,7 +124,7 @@ async function selectFusiooByJsonbField(table, field, values, requesterEmail) {
 async function selectFusiooByIds(table, ids, requesterEmail) {
   if (!ids || ids.length === 0) return [];
   try {
-    const response = await base44.functions.invoke('querySupabase', {
+    const response = await invokeApi('querySupabase', {
       project: 'fusioo',
       table,
       operation: 'filterIdIn',
@@ -139,7 +139,7 @@ async function selectFusiooByIds(table, ids, requesterEmail) {
 
 async function selectFusiooAllRows(table, requesterEmail) {
   try {
-    const response = await base44.functions.invoke('querySupabase', {
+    const response = await invokeApi('querySupabase', {
       project: 'fusioo',
       table,
       operation: 'selectAllPaginated',
@@ -214,7 +214,7 @@ export default function AdminFlightManagement() {
     enabled: !!user?.email,
     queryFn: async () => {
       try {
-        const response = await base44.functions.invoke('querySupabase', {
+        const response = await invokeApi('querySupabase', {
           project: 'automate',
           table: 'flight_emails',
           operation: 'selectAllOrdered',
@@ -545,7 +545,7 @@ export default function AdminFlightManagement() {
     enabled: groupByAgent && !!user?.email,
     queryFn: async () => {
       try {
-        const response = await base44.functions.invoke('employeeList', {
+        const response = await invokeApi('employeeList', {
           requesterEmail: user?.email,
         });
         return (response.data?.accounts || []).filter((e) => e.role === 'team_leader');
@@ -869,6 +869,28 @@ function FlightTableHeader() {
   );
 }
 
+// Repeats the same column labels as FlightTableHeader right after every
+// agent's name — the real <thead> only ever renders once at the very top of
+// the table, so by the time someone scrolls past the first few agents, it's
+// long out of view and the columns (GDX, Type, Route/s...) stop being
+// obvious. A muted background tint (vs. the plain top header) keeps it
+// readable as "this is a reminder", not a second real table.
+function FlightColumnLabelsRow() {
+  return (
+    <TableRow className="hover:bg-transparent bg-muted/40 border-y">
+      <TableHead className="w-8"></TableHead>
+      <TableHead className={HEADER_CELL_CLASS}>Airline</TableHead>
+      <TableHead className={HEADER_CELL_CLASS}>Booking Ref</TableHead>
+      <TableHead className={HEADER_CELL_CLASS}>GDX</TableHead>
+      <TableHead className={HEADER_CELL_CLASS}>Client</TableHead>
+      <TableHead className={HEADER_CELL_CLASS}>Type</TableHead>
+      <TableHead className={HEADER_CELL_CLASS}>Route/s</TableHead>
+      <TableHead className={cn(HEADER_CELL_CLASS, "hidden md:table-cell")}>Departure Date</TableHead>
+      <TableHead className={cn(HEADER_CELL_CLASS, "hidden md:table-cell")}>Received Date</TableHead>
+    </TableRow>
+  );
+}
+
 function groupLabelFor(dateKey, todayKey, yesterdayKey) {
   if (!dateKey) return "No date";
   if (dateKey === todayKey) return "Today";
@@ -880,6 +902,7 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
   let lastAgentKey;
   let lastTeamKey;
   let lastDateKey;
+  let isFirstAgentGroup = true;
   const colSpanCount = 9;
 
   return rows.map((r) => {
@@ -907,9 +930,16 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
       lastAgentKey = undefined; // force the agent header to also show
     }
     const showAgentHeader = groupByAgent && agentKey !== lastAgentKey;
+    // The real <thead> (FlightTableHeader) is already sitting right above
+    // the very first agent group, with nothing but its name in between — an
+    // immediate repeat there reads as a plain duplicate, not a helpful
+    // reminder. Only worth repeating once there's actually been a scroll
+    // past a previous group, so it starts at the SECOND agent onward.
+    const showColumnLabelsRow = showAgentHeader && !isFirstAgentGroup;
     if (groupByAgent && agentKey !== lastAgentKey) {
       lastAgentKey = agentKey;
       lastDateKey = undefined;
+      isFirstAgentGroup = false;
     }
 
     const dateKey = getPrimaryDepartureDate(r);
@@ -934,7 +964,7 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
         )}
         {showAgentHeader && (
           <TableRow className="hover:bg-transparent border-0">
-            <TableCell colSpan={colSpanCount} className={cn("pt-2 pb-1", isAdminLike && "pl-8")}>
+            <TableCell colSpan={colSpanCount} className={cn("pt-4 pb-1 border-t", isAdminLike && "pl-8")}>
               <div className="flex items-center gap-2">
                 <UserCircle className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                 <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground/70">Agent</span>
@@ -949,6 +979,7 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
             </TableCell>
           </TableRow>
         )}
+        {showColumnLabelsRow && <FlightColumnLabelsRow />}
         {showGroupHeader && (
           <TableRow className="hover:bg-transparent border-0">
             <TableCell colSpan={colSpanCount} className={cn("pt-1.5 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70", isAdminLike && "pl-12")}>

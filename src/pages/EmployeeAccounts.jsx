@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { base44 } from "@/api/base44Client";
+import { invokeApi } from "@/lib/vercelApi";
 import { useAuth } from "@/hooks/useAuth";
 import FlightTrackerSidebar from "@/components/FlightTrackerSidebar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -66,12 +66,12 @@ export default function EmployeeAccounts() {
     queryKey: ["synced_employee_list"],
     enabled: user?.role === "super_admin" && !!user?.email,
     queryFn: async () => {
-      // base44.functions.invoke() rejects on any non-2xx response rather
-      // than resolving with the error in response.data, so the real
-      // message ("Insufficient permissions", etc.) has to be read out of
-      // the rejected error, not a response.data.error check on success.
+      // invokeApi() rejects on any non-2xx response rather than resolving
+      // with the error in response.data, so the real message ("Insufficient
+      // permissions", etc.) has to be read out of the rejected error, not a
+      // response.data.error check on success.
       try {
-        const response = await base44.functions.invoke("employeeList", {
+        const response = await invokeApi("employeeList", {
           requesterEmail: user?.email,
         });
         return response.data?.accounts || [];
@@ -84,9 +84,9 @@ export default function EmployeeAccounts() {
   const resetPassword = useMutation({
     mutationFn: async (account) => {
       try {
-        const response = await base44.functions.invoke("resetEmployeePassword", {
+        const response = await invokeApi("resetEmployeePassword", {
           requesterEmail: user?.email,
-          targetId: account.id,
+          targetEmail: account.email,
         });
         return { account, password: response.data.password };
       } catch (err) {
@@ -103,9 +103,9 @@ export default function EmployeeAccounts() {
   const updateAccount = useMutation({
     mutationFn: async ({ account, patch }) => {
       try {
-        await base44.functions.invoke("updateEmployeeAccount", {
+        await invokeApi("updateEmployeeAccount", {
           requesterEmail: user?.email,
-          targetId: account.id,
+          targetEmail: account.email,
           ...patch,
         });
         return { account, patch };

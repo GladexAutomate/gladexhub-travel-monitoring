@@ -336,16 +336,31 @@ function checkEmailQuota_() {
   const alreadyWarnedToday = props.getProperty('QUOTA_WARNING_SENT_FOR') === String(remaining);
   if (alreadyWarnedToday) return;
 
-  MailApp.sendEmail(
-    Session.getActiveUser().getEmail(),
-    '⚠️ Flight Tracker: email quota running low (' + remaining + ' left today)',
-    'This Google account has only ' + remaining + ' outgoing email(s) left in its daily quota. ' +
-      'Every alert this system sends (unrecognized senders, this heartbeat check) uses that same ' +
-      'quota — once it hits 0, those alerts stop silently until the quota resets (Google resets it ' +
-      'daily). If this account is on a free/personal Gmail plan (100/day) rather than Google ' +
-      'Workspace (1,500/day), consider whether a Workspace upgrade is worth it — this account\'s ' +
-      'quota can\'t be purchased or increased any other way.'
-  );
+  // BUG FIXED: this is called first thing inside checkSyncHeartbeat_, ahead
+  // of the actual staleness check and its self-healing trigger recreation
+  // (see below). remaining=0 is exactly the case this function exists to
+  // warn about — but sending that warning is itself an email, and at
+  // remaining=0 MailApp.sendEmail throws (no quota left to send with). That
+  // exception, previously unguarded, aborted checkSyncHeartbeat_ entirely —
+  // silently skipping the self-healing check at the worst possible moment
+  // (quota genuinely at 0) — and since the line below never ran either, the
+  // very next 30-minute cycle hit the identical unguarded throw again, and
+  // every cycle after that for the rest of the day. Wrapping this call and
+  // always recording the attempt (success or not) stops both problems.
+  try {
+    MailApp.sendEmail(
+      Session.getActiveUser().getEmail(),
+      '⚠️ Flight Tracker: email quota running low (' + remaining + ' left today)',
+      'This Google account has only ' + remaining + ' outgoing email(s) left in its daily quota. ' +
+        'Every alert this system sends (unrecognized senders, this heartbeat check) uses that same ' +
+        'quota — once it hits 0, those alerts stop silently until the quota resets (Google resets it ' +
+        'daily). If this account is on a free/personal Gmail plan (100/day) rather than Google ' +
+        'Workspace (1,500/day), consider whether a Workspace upgrade is worth it — this account\'s ' +
+        'quota can\'t be purchased or increased any other way.'
+    );
+  } catch (err) {
+    Logger.log('checkEmailQuota_: could not send the quota-warning email itself (quota likely at 0): ' + err);
+  }
   props.setProperty('QUOTA_WARNING_SENT_FOR', String(remaining));
 }
 
@@ -403,7 +418,17 @@ function checkSyncHeartbeat_() {
     return;
   }
 
-  sendHeartbeatAlert_(lastRun, false, autoFixNote);
+  // Wrapped for the same reason as checkEmailQuota_ above: if quota is at 0
+  // this throws, and the property write below must still happen — the
+  // auto-fix trigger recreation above already completed by this point
+  // either way, so a failed alert email here only costs the notification,
+  // never the self-healing, and won't retry-loop every 30 minutes for the
+  // rest of the day.
+  try {
+    sendHeartbeatAlert_(lastRun, false, autoFixNote);
+  } catch (err) {
+    Logger.log('checkSyncHeartbeat_: could not send the stale-sync alert email (quota likely at 0): ' + err);
+  }
   props.setProperty('HEARTBEAT_ALERT_SENT_FOR', lastRun);
 }
 
@@ -500,6 +525,13 @@ const NOISE_SUBJECT_SUBSTRINGS = [
   // RAKSO's genuine schedule-change/advisory forwards use different subject
   // wording entirely and are unaffected by this filter.
   'gladex sm (reference code:',
+  // Expedia TAAP's HOTEL stay itinerary emails — "Itinerary - Stay at
+  // [Hotel Name], [dates]" — matched on "itinerary", but this is lodging,
+  // not a flight. Deliberately a subject-phrase filter, not a domain-wide
+  // exclusion (see NOISE_SENDER_DOMAINS above) — Expedia TAAP could
+  // plausibly send a real flight itinerary from the same address someday,
+  // and "stay at" would never appear in that subject.
+  'itinerary - stay at',
 ];
 
 function isLikelyNoise_(fromEmail, subject) {
@@ -516,12 +548,28 @@ function checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey, afterDate) {
   // Wide on purpose — better to catch a marketing email by accident (it just
   // sits harmlessly under the UnknownAirlineSender label) than to miss a real
   // flight disruption because it happened to use a wording not listed here.
+  //
+  // subject:(...) only ever matches the SUBJECT line — a disruption notice
+  // with a generic subject ("Important Update") but the real cancellation/
+  // reschedule wording only in the BODY would slip through entirely. Fixed
+  // by OR-ing in a SHORT list of exact, multi-word phrases (unscoped, so
+  // Gmail matches them anywhere including the body) pulled verbatim from
+  // real confirmed templates already parsed elsewhere in this file (see the
+  // cancelMatch/detectPALType_ regexes). Deliberately NOT single common
+  // words like "cancel" or "delayed" here — those would match ordinary
+  // non-flight mail (subscription/meeting cancellations, bounce notices) at
+  // huge volume; exact phrases like "has been cancelled" are rare outside a
+  // genuine disruption notice, keeping this addition high-precision.
   let query =
-    'subject:(itinerary OR "booking reference" OR "e-ticket" OR eticket OR ' +
+    '(subject:(itinerary OR "booking reference" OR "e-ticket" OR eticket OR ' +
     '"flight confirmation" OR "boarding pass" OR reschedule OR rebooking OR rebook OR ' +
     'cancellation OR cancelled OR canceled OR "flight change" OR "schedule change" OR ' +
     '"schedule update" OR "flight update" OR "flight advisory" OR "travel advisory" OR ' +
-    '"flight disruption" OR disrupted OR delayed OR delay OR PNR)' +
+    '"flight disruption" OR disrupted OR delayed OR delay OR postponed OR diverted OR ' +
+    'diversion OR "irregular operations" OR IROP OR PNR) OR ' +
+    '"has been cancelled" OR "has been canceled" OR "has been rescheduled" OR ' +
+    '"schedule has been changed" OR "has been delayed" OR "new departure time" OR ' +
+    '"now scheduled to depart")' +
     ' -label:' + CONFIG.LABEL_UNKNOWN_SENDER +
     ' -label:' + CONFIG.LABEL_PROCESSED +
     ' -label:' + CONFIG.LABEL_NEEDS_REVIEW;
@@ -545,6 +593,17 @@ function checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey, afterDate) {
   const effectiveAfterDate = afterDate || dateNDaysAgo_(CONFIG.LIVE_SAFETY_NET_LOOKBACK_DAYS);
   query += ' after:' + effectiveAfterDate;
   const threads = GmailApp.search(query, 0, 200);
+  // BUG FOUND (live run, 2026-07-21): this account's OWN alert email (sent
+  // by MailApp.sendEmail below, TO this same account) quotes the original
+  // flagged sender/subject in its body — e.g. "sales@gladextours.com |
+  // <subject>". If that original subject happened to contain a real keyword
+  // (cancelled, PNR, etc.), the alert email's body now ALSO matches this
+  // same search on the next run, so the safety net "finds" its own past
+  // alert as a brand-new unconfigured sender and generates a needs_attention
+  // row about ITSELF plus another alert email. Excluding the account's own
+  // address closes this off at the root — a self-sent system notification
+  // is never a candidate airline sender to begin with.
+  const selfEmail = Session.getActiveUser().getEmail().toLowerCase();
 
   const findings = [];
   threads.forEach(function (thread) {
@@ -557,6 +616,13 @@ function checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey, afterDate) {
       return fromEmail === known.toLowerCase();
     });
     if (isKnown) return; // already covered by the per-airline loop in runSync_
+
+    if (fromEmail === selfEmail) {
+      // Still labeled so it's not re-scanned every run, but never treated as
+      // a finding — see the selfEmail comment above.
+      thread.addLabel(label);
+      return;
+    }
 
     const subject = message.getSubject() || '';
     if (isLikelyNoise_(fromEmail, subject)) {
@@ -678,9 +744,12 @@ function detectCebuPacificType_(subject, body) {
   const bod = body.toLowerCase();
 
   // Check the more specific types first so e.g. "Reschedule Confirmation"
-  // doesn't get misclassified as a plain booking confirmation.
-  if (subj.indexOf('cancell') !== -1) return 'cancellation';
-  if (subj.indexOf('reschedule') !== -1) return 'reschedule';
+  // doesn't get misclassified as a plain booking confirmation. Body checked
+  // too (not just subject) — a disruption notice with a generic subject but
+  // the real wording only in the body must not fall through unclassified
+  // (see the equivalent fix in checkForUnknownAirlineSenders_).
+  if (subj.indexOf('cancell') !== -1 || bod.indexOf('has been cancelled') !== -1 || bod.indexOf('has been canceled') !== -1) return 'cancellation';
+  if (subj.indexOf('reschedule') !== -1 || bod.indexOf('has been rescheduled') !== -1 || bod.indexOf('schedule has been changed') !== -1) return 'reschedule';
   if (subj.indexOf('itinerary receipt') !== -1 || bod.indexOf('confirmed') !== -1) return 'confirmation';
 
   return null;
@@ -769,11 +838,17 @@ function parseCebuPacificFlights_(body) {
 
 function detectAirAsiaType_(subject, body) {
   const subj = subject.toLowerCase();
-  if (subj.indexOf('cancel') !== -1) return 'cancellation';
+  const bod = (body || '').toLowerCase();
+  // Body checked too (not just subject) — a disruption notice with a
+  // generic subject but the real wording only in the body must not fall
+  // through unclassified (see the equivalent fix in
+  // checkForUnknownAirlineSenders_). cancelMatch below already proves "has
+  // been cancelled" appears verbatim in real AirAsia cancellation bodies.
+  if (subj.indexOf('cancel') !== -1 || bod.indexOf('has been cancelled') !== -1 || bod.indexOf('has been canceled') !== -1) return 'cancellation';
   // "Important Update: Extended Flight Change Option..." is a reroute
   // notice — same family as a reschedule, just a different subject phrasing
   // (verified against a real sample: no "reschedule" word in the subject at all).
-  if (subj.indexOf('reschedule') !== -1 || subj.indexOf('flight change') !== -1) return 'reschedule';
+  if (subj.indexOf('reschedule') !== -1 || subj.indexOf('flight change') !== -1 || bod.indexOf('has been rescheduled') !== -1) return 'reschedule';
   if (subj.indexOf('confirmation') !== -1 || subj.indexOf('itinerary') !== -1 || subj.indexOf('e-ticket') !== -1) return 'confirmation';
   return null;
 }
@@ -969,8 +1044,8 @@ function parseAirAsiaFlights_(body) {
 function detectHKExpressType_(subject, body) {
   const subj = subject.toLowerCase();
   const bod = body.toLowerCase();
-  if (subj.indexOf('cancel') !== -1 || bod.indexOf('has been cancelled') !== -1) return 'cancellation';
-  if (subj.indexOf('reschedule') !== -1 || subj.indexOf('changed') !== -1) return 'reschedule';
+  if (subj.indexOf('cancel') !== -1 || bod.indexOf('has been cancelled') !== -1 || bod.indexOf('has been canceled') !== -1) return 'cancellation';
+  if (subj.indexOf('reschedule') !== -1 || subj.indexOf('changed') !== -1 || bod.indexOf('has been rescheduled') !== -1 || bod.indexOf('schedule has been changed') !== -1) return 'reschedule';
   if (subj.indexOf('itinerary') !== -1 || subj.indexOf('confirmation') !== -1 || subj.indexOf('check in') !== -1 || subj.indexOf('check-in') !== -1) return 'confirmation';
   return null;
 }
@@ -1120,11 +1195,14 @@ function detectPALType_(subject, body) {
   // sync run (was falling through to null/unrecognized entirely, meaning
   // these genuine reschedule notices were invisible before this).
   if (subj.indexOf('schedule has been changed') !== -1) return 'reschedule';
-  if (subj.indexOf('cancel') !== -1 || bod.indexOf('has been cancelled') !== -1) return 'cancellation';
+  if (subj.indexOf('cancel') !== -1 || bod.indexOf('has been cancelled') !== -1 || bod.indexOf('has been canceled') !== -1) return 'cancellation';
   // "Your Flight Change is Confirmed - ..." is a reschedule, not a fresh
   // booking confirmation — verified against a real sample. Checked before
   // the confirm check below since that subject also contains "confirmed".
-  if (subj.indexOf('reschedul') !== -1 || subj.indexOf('rebook') !== -1 || subj.indexOf('flight change') !== -1) return 'reschedule';
+  // Body checked too, same reasoning as the cancellation check above — a
+  // reschedule notice with a generic subject must not fall through
+  // unclassified (see the equivalent fix in checkForUnknownAirlineSenders_).
+  if (subj.indexOf('reschedul') !== -1 || subj.indexOf('rebook') !== -1 || subj.indexOf('flight change') !== -1 || bod.indexOf('has been rescheduled') !== -1 || bod.indexOf('schedule has been changed') !== -1) return 'reschedule';
   // 'confirm' (not just 'confirmation') so "...is Confirmed" subjects match too.
   if (subj.indexOf('boarding pass') !== -1 || subj.indexOf('check') !== -1 || subj.indexOf('itinerary') !== -1 || subj.indexOf('confirm') !== -1) return 'confirmation';
   return null;

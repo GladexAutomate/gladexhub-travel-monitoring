@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { base44 } from "@/api/base44Client";
+import { invokeApi } from "@/lib/vercelApi";
 import { useAuth } from "@/hooks/useAuth";
 import { Plane, CheckCircle2, RotateCcw, XCircle, AlertTriangle, Volume2 } from "lucide-react";
 import { format, formatDistanceToNowStrict } from "date-fns";
@@ -94,7 +94,7 @@ export default function FlightTrackerTV() {
     enabled: !!user?.email,
     queryFn: async () => {
       try {
-        const response = await base44.functions.invoke("querySupabase", {
+        const response = await invokeApi("querySupabase", {
           project: "automate",
           table: "flight_emails",
           operation: "selectAllOrdered",

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { base44 } from '@/api/base44Client';
+import { invokeApi } from '@/lib/vercelApi';
 
 const STORAGE_KEY = 'gladex_flight_tracker_user';
 
@@ -39,7 +39,7 @@ export function useAuth() {
 
     const checkSession = async () => {
       try {
-        const response = await base44.functions.invoke('validateSession', {
+        const response = await invokeApi('validateSession', {
           email: user.email,
         });
         if (response.data?.valid === false) {
@@ -58,7 +58,7 @@ export function useAuth() {
 
   const login = useCallback(async (identifier, password) => {
     try {
-      const response = await base44.functions.invoke('employeeLogin', {
+      const response = await invokeApi('employeeLogin', {
         identifier: identifier.trim(),
         password,
       });
