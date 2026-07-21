@@ -6,6 +6,18 @@ import { createClient } from '@supabase/supabase-js';
 // the real source; validate-session.js is the authoritative freshness check
 // for deactivation, running independently every 5 minutes, so this doesn't
 // need to duplicate that live check on every single poll.
+// Short-lived, in-memory cache for selectAllOrdered — survives across
+// requests only while this serverless instance stays warm (Vercel reuses
+// warm containers between nearby invocations; a cold start just starts
+// empty, never wrong). Keyed on the query shape, NOT the requester — the
+// raw rows are identical for everyone, RBAC scoping is applied fresh below
+// on every request regardless of whether the raw rows came from cache, so
+// this never leaks data across permission levels. Multiple people/tabs
+// (dashboard + TV display, several admins) polling within the same few
+// seconds hit this instead of Supabase each time.
+const rawRowsCache = new Map();
+const RAW_ROWS_CACHE_TTL_MS = 20 * 1000;
+
 const PROJECTS = {
   automate: {
     urlEnv: 'VITE_AUTOMATE_SUPABASE_URL',
@@ -243,22 +255,30 @@ export default async function handler(req, res) {
       // with no parsed departure_date at all (needs_attention placeholders),
       // matching the client-side fallback of "can't tell, so keep it".
       const { orderBy, ascending = false, selectColumns = '*', pageSize = 1000, minPrimaryDepartureDate } = body;
-      let from = 0;
-      while (true) {
-        let queryBuilder = supabase
-          .from(table)
-          .select(selectColumns)
-          .order(orderBy, { ascending });
-        if (minPrimaryDepartureDate) {
-          queryBuilder = queryBuilder.or(
-            `flights->0->>departure_date.gte.${minPrimaryDepartureDate},flights->0->>departure_date.is.null`
-          );
+
+      const cacheKey = `${project}:${table}:${orderBy}:${ascending}:${selectColumns}:${minPrimaryDepartureDate || ''}`;
+      const cached = rawRowsCache.get(cacheKey);
+      if (cached && Date.now() - cached.at < RAW_ROWS_CACHE_TTL_MS) {
+        rows = cached.rows;
+      } else {
+        let from = 0;
+        while (true) {
+          let queryBuilder = supabase
+            .from(table)
+            .select(selectColumns)
+            .order(orderBy, { ascending });
+          if (minPrimaryDepartureDate) {
+            queryBuilder = queryBuilder.or(
+              `flights->0->>departure_date.gte.${minPrimaryDepartureDate},flights->0->>departure_date.is.null`
+            );
+          }
+          const { data, error } = await queryBuilder.range(from, from + pageSize - 1);
+          if (error) throw error;
+          rows.push(...(data || []));
+          if (!data || data.length < pageSize) break;
+          from += pageSize;
         }
-        const { data, error } = await queryBuilder.range(from, from + pageSize - 1);
-        if (error) throw error;
-        rows.push(...(data || []));
-        if (!data || data.length < pageSize) break;
-        from += pageSize;
+        rawRowsCache.set(cacheKey, { rows, at: Date.now() });
       }
     } else if (operation === 'filterJsonbIn') {
       const { jsonbField, values, selectColumns = 'data', chunkSize = 150 } = body;

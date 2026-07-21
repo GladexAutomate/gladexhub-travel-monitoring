@@ -242,6 +242,14 @@ export default function AdminFlightManagement() {
     // to this tab is exactly when someone wants the freshest list.
     refetchInterval: 60 * 1000,
     refetchOnWindowFocus: true,
+    // Without this, React Query treats data as stale the instant it lands —
+    // so navigating away and back (e.g. Accounts page then back to Flight
+    // Emails) re-fetched the whole ~3.8k-row query from scratch even if it
+    // had just loaded seconds ago. staleTime just under refetchInterval
+    // means a remount within that window reuses the cached data instantly
+    // instead of blocking on a new request, while the interval/focus
+    // triggers above still keep it genuinely live.
+    staleTime: 55 * 1000,
   });
 
   // GDX/client lookup: flight_emails only holds what the airline email says
