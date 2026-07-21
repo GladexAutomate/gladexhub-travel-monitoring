@@ -234,14 +234,27 @@ export default async function handler(req, res) {
     let rows = [];
 
     if (operation === 'selectAllOrdered') {
-      const { orderBy, ascending = false, selectColumns = '*', pageSize = 1000 } = body;
+      // minPrimaryDepartureDate: server-side equivalent of the frontend's
+      // getPrimaryDepartureDate() >= cutoff filter (see
+      // AdminFlightManagement.jsx) — cuts thousands of years-old backfilled
+      // bookings out of the fetch entirely instead of downloading everything
+      // and filtering client-side. Verified against a live count to match
+      // the JS-computed result exactly before shipping this. Keeps any row
+      // with no parsed departure_date at all (needs_attention placeholders),
+      // matching the client-side fallback of "can't tell, so keep it".
+      const { orderBy, ascending = false, selectColumns = '*', pageSize = 1000, minPrimaryDepartureDate } = body;
       let from = 0;
       while (true) {
-        const { data, error } = await supabase
+        let queryBuilder = supabase
           .from(table)
           .select(selectColumns)
-          .order(orderBy, { ascending })
-          .range(from, from + pageSize - 1);
+          .order(orderBy, { ascending });
+        if (minPrimaryDepartureDate) {
+          queryBuilder = queryBuilder.or(
+            `flights->0->>departure_date.gte.${minPrimaryDepartureDate},flights->0->>departure_date.is.null`
+          );
+        }
+        const { data, error } = await queryBuilder.range(from, from + pageSize - 1);
         if (error) throw error;
         rows.push(...(data || []));
         if (!data || data.length < pageSize) break;

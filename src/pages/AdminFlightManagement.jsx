@@ -227,6 +227,7 @@ export default function AdminFlightManagement() {
           operation: 'selectAllOrdered',
           orderBy: 'received_date',
           ascending: false,
+          minPrimaryDepartureDate: MIN_DEPARTURE_DATE,
           requesterEmail: user?.email,
         });
         return response.data.rows || [];

@@ -113,6 +113,10 @@ export default function FlightTrackerTV() {
           operation: "selectAllOrdered",
           orderBy: "received_date",
           ascending: false,
+          // Matches AdminFlightManagement.jsx's MIN_DEPARTURE_DATE — no
+          // reason for a wall display to ever alert on a years-old
+          // backfilled booking.
+          minPrimaryDepartureDate: "2026-01-01",
           requesterEmail: user?.email,
         });
         return response.data.rows || [];
