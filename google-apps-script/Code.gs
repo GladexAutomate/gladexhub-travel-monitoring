@@ -62,6 +62,11 @@ const CONFIG = {
   // resweeping the entire mailbox history (which flooded the inbox with a
   // fresh alert email every single cycle for days — see the fix comment).
   LIVE_SAFETY_NET_LOOKBACK_DAYS: 3,
+  // See checkSyncHeartbeat_ — how long without a successful sync run before
+  // it's treated as "the pipeline has stopped", not just "a slow cycle".
+  // fetchNewEmails runs every 5-10 min, so this allows a few missed cycles
+  // before alerting, to avoid a false alarm over one unlucky slow run.
+  HEARTBEAT_STALE_MINUTES: 20,
 };
 
 // Each entry: { name, senderQuery, detectEmailType, parseBookingRef, parseFlights }.
@@ -290,6 +295,83 @@ function runSync_(afterDate, maxThreadsPerAirline) {
   } catch (err) {
     Logger.log('UNEXPECTED ERROR in checkForUnknownAirlineSenders_ (will retry next run): ' + err);
   }
+
+  // Reaching this line means the run completed without a fatal, uncaught
+  // exception anywhere above — record it so checkSyncHeartbeat_ (a separate,
+  // independent trigger) can tell "sync is running but found nothing" apart
+  // from "sync has stopped running entirely" (trigger deleted, quota
+  // exhausted, a persistent script error). Every other safeguard in this
+  // file protects against a specific email being missed; this is the one
+  // that protects against the WHOLE pipeline silently going dark.
+  recordHeartbeat_();
+}
+
+/**
+ * Writes the current time to Script Properties — see checkSyncHeartbeat_.
+ */
+function recordHeartbeat_() {
+  PropertiesService.getScriptProperties().setProperty('LAST_SUCCESSFUL_RUN', new Date().toISOString());
+}
+
+/**
+ * Independent watchdog — put this on its OWN time-based trigger (see
+ * installHeartbeatTrigger below), separate from fetchNewEmails' trigger, so
+ * it keeps working even if fetchNewEmails' own trigger is the thing that
+ * broke. Alerts if too much time has passed since the last successful
+ * runSync_ completion — the only way to notice "the sync has stopped
+ * running altogether" instead of "the sync ran and found nothing to do".
+ * Sends at most one alert per stale period (re-labels its own marker) so it
+ * doesn't spam the same way the unknown-sender bug once did.
+ */
+function checkSyncHeartbeat_() {
+  const props = PropertiesService.getScriptProperties();
+  const lastRun = props.getProperty('LAST_SUCCESSFUL_RUN');
+  const alreadyAlerted = props.getProperty('HEARTBEAT_ALERT_SENT_FOR') === lastRun;
+
+  if (!lastRun) {
+    Logger.log('checkSyncHeartbeat_: no successful run recorded yet — skipping (probably just set up).');
+    return;
+  }
+
+  const minutesSinceLastRun = (Date.now() - new Date(lastRun).getTime()) / (60 * 1000);
+  if (minutesSinceLastRun <= CONFIG.HEARTBEAT_STALE_MINUTES) {
+    Logger.log('checkSyncHeartbeat_: healthy — last successful run was ' + Math.round(minutesSinceLastRun) + ' minute(s) ago.');
+    return;
+  }
+
+  Logger.log('checkSyncHeartbeat_: STALE — last successful run was ' + Math.round(minutesSinceLastRun) + ' minute(s) ago (threshold: ' + CONFIG.HEARTBEAT_STALE_MINUTES + ').');
+
+  if (alreadyAlerted) {
+    Logger.log('checkSyncHeartbeat_: already alerted for this stale period, not sending again.');
+    return;
+  }
+
+  MailApp.sendEmail(
+    Session.getActiveUser().getEmail(),
+    '🚨 Flight Tracker sync appears to have stopped',
+    'The Gmail-to-Supabase flight email sync has not completed successfully in over ' +
+      CONFIG.HEARTBEAT_STALE_MINUTES + ' minutes (last successful run: ' + lastRun + ').\n\n' +
+      'This usually means one of:\n' +
+      '- The fetchNewEmails time-based trigger was deleted or disabled\n' +
+      '- The script is hitting a persistent error every run (check the Executions log)\n' +
+      '- A Google/Gmail/Supabase quota was exhausted\n\n' +
+      'Check the Apps Script project\'s Executions page and Triggers page to diagnose. ' +
+      'You will not get another one of these alerts until the sync recovers and then goes stale again.'
+  );
+  props.setProperty('HEARTBEAT_ALERT_SENT_FOR', lastRun);
+}
+
+/**
+ * Run this ONCE to set up checkSyncHeartbeat_ on its own recurring trigger.
+ * Deliberately separate from fetchNewEmails' own trigger — if that one gets
+ * deleted or breaks, this one is what notices.
+ */
+function installHeartbeatTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'checkSyncHeartbeat_') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('checkSyncHeartbeat_').timeBased().everyMinutes(30).create();
+  Logger.log('Installed checkSyncHeartbeat_ on a 30-minute trigger.');
 }
 
 /**
