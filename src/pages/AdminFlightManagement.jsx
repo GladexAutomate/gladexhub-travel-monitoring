@@ -159,6 +159,13 @@ function getPrimaryDepartureDate(record) {
   return record.flights?.[0]?.departure_date || null;
 }
 
+// Historical backfills before this file's current CONFIG.HISTORICAL_AFTER_DATE
+// was narrowed left thousands of 2022-2024 bookings sitting in flight_emails
+// — years-old, no longer operationally relevant, just noise in both the
+// upcoming and archive views. Filtered here (not deleted from Supabase) so
+// the data isn't destroyed, just hidden from day-to-day use.
+const MIN_DEPARTURE_DATE = "2026-01-01";
+
 function dateKeyOffset(days) {
   const d = new Date();
   d.setDate(d.getDate() + days);
@@ -425,6 +432,9 @@ export default function AdminFlightManagement() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return accessScoped.filter((r) => {
+      const departureDate = getPrimaryDepartureDate(r);
+      if (departureDate && departureDate < MIN_DEPARTURE_DATE) return false;
+
       const matchesType = typeFilter === "all" || r.email_type === typeFilter;
       const matchesAirline = airlineFilter === "all" || r.airline === airlineFilter;
 
