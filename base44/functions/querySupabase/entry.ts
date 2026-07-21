@@ -41,6 +41,109 @@ function chunkArray(items, size) {
   return chunks;
 }
 
+// Mirrors AdminFlightManagement.jsx's accessScoped/gdxByBookingRef exactly
+// (same join path, same trim/lowercase comparisons) — this used to be the
+// KNOWN GAP noted below: an active 'agent' or 'team_leader' could call this
+// function directly (bypassing the frontend's client-side filter entirely)
+// and receive the FULL, unscoped flight_emails table. Only applies to
+// flight_emails; every other table this function serves has no per-row RBAC
+// requirement to begin with.
+async function scopeFlightEmailsRows(rows, requester, fusioo) {
+  const role = requester.role_override || requester.role;
+  if (role === 'admin' || role === 'super_admin') return rows; // unrestricted, same as ADMIN_LIKE_ROLES client-side
+
+  // Anything other than agent/team_leader (e.g. 'hr', or no role) gets
+  // nothing — matches accessScoped's `return false` fallthrough exactly.
+  if (role !== 'agent' && role !== 'team_leader') return [];
+
+  const bookingRefs = Array.from(new Set(rows.map((r) => r.booking_ref).filter(Boolean)));
+  if (bookingRefs.length === 0) return [];
+
+  // Step 1: booking_ref -> fusioo_ticket_details.booking_transactions link.
+  const tickets = await fusiooFilterJsonbIn(fusioo, 'fusioo_ticket_details', 'booking_reference_number_pnr', bookingRefs);
+  const bookingIds = Array.from(new Set(tickets.flatMap((t) => t.data.booking_transactions || [])));
+
+  // Step 2: fusioo_booking_transactions.id -> name_of_agent (per-booking agent).
+  const bookings = bookingIds.length ? await fusiooFilterIdIn(fusioo, 'fusioo_booking_transactions', bookingIds) : [];
+  const bookingsById = Object.fromEntries(bookings.map((b) => [b.id, b.data]));
+
+  const agentNameByBookingRef = {};
+  tickets.forEach((t) => {
+    const bookingId = (t.data.booking_transactions || [])[0] || null;
+    const booking = bookingId ? bookingsById[bookingId] : null;
+    const agentName = (booking?.name_of_agent || [])[0] || null;
+    if (agentName) agentNameByBookingRef[t.data.booking_reference_number_pnr] = agentName;
+  });
+
+  if (role === 'agent') {
+    const myName = (requester.full_name || '').trim().toLowerCase();
+    return rows.filter((r) => (agentNameByBookingRef[r.booking_ref] || '').trim().toLowerCase() === myName);
+  }
+
+  // team_leader: need each matched agent's PRIMARY team — majority vote
+  // across ALL of fusioo_booking_transactions (an agent's team tag varies
+  // per-transaction), same as agentPrimaryTeam client-side. This is a full
+  // table scan on every team_leader call — heavier than the agent path, but
+  // correctness here is the point of this fix, not speed.
+  const allBookings = await fusiooSelectAllPaginated(fusioo, 'fusioo_booking_transactions');
+  const teamCounts = {};
+  allBookings.forEach((b) => {
+    const agent = ((b.data.name_of_agent || [])[0] || '').trim();
+    const team = ((b.data.agent_name || [])[0] || '').trim();
+    if (!agent || !team) return;
+    teamCounts[agent] = teamCounts[agent] || {};
+    teamCounts[agent][team] = (teamCounts[agent][team] || 0) + 1;
+  });
+  const primaryTeamByAgent = {};
+  Object.entries(teamCounts).forEach(([agent, counts]) => {
+    primaryTeamByAgent[agent] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+  });
+
+  const myTeam = (requester.team_name || '').trim().toLowerCase();
+  return rows.filter((r) => {
+    const agentName = agentNameByBookingRef[r.booking_ref];
+    if (!agentName) return false;
+    return (primaryTeamByAgent[agentName] || '').trim().toLowerCase() === myTeam;
+  });
+}
+
+async function fusiooFilterJsonbIn(fusioo, table, jsonbField, values) {
+  const results = await Promise.all(
+    chunkArray(values, 150).map(async (batch) => {
+      const quoted = batch.map((v) => `"${String(v).replace(/"/g, '\\"')}"`).join(',');
+      const { data, error } = await fusioo.from(table).select('id,data').filter(`data->>${jsonbField}`, 'in', `(${quoted})`);
+      if (error) throw error;
+      return data || [];
+    })
+  );
+  return results.flat();
+}
+
+async function fusiooFilterIdIn(fusioo, table, ids) {
+  const results = await Promise.all(
+    chunkArray(ids, 150).map(async (batch) => {
+      const { data, error } = await fusioo.from(table).select('id,data').in('id', batch);
+      if (error) throw error;
+      return data || [];
+    })
+  );
+  return results.flat();
+}
+
+async function fusiooSelectAllPaginated(fusioo, table) {
+  const rows = [];
+  let from = 0;
+  const pageSize = 1000;
+  while (true) {
+    const { data, error } = await fusioo.from(table).select('data').range(from, from + pageSize - 1);
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+    from += pageSize;
+  }
+  return rows;
+}
+
 Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
@@ -75,16 +178,6 @@ Deno.serve(async (req) => {
     if (!requesterRole) {
       return Response.json({ error: 'Account role not assigned' }, { status: 403 });
     }
-
-    // KNOWN GAP: this function does not enforce per-row RBAC (team/agent
-    // scoping) server-side — it trusts AdminFlightManagement.jsx's
-    // accessScoped filter to apply that after the data comes back. Any
-    // active, role-assigned employee (including a plain 'agent') can call
-    // this function directly with operation 'selectAllOrdered'/
-    // 'selectAllPaginated' and receive the full, unscoped table. Closing
-    // this properly requires replicating the agent/team scoping logic here,
-    // which depends on the agentPrimaryTeam roster this function doesn't
-    // compute — flagged for follow-up rather than improvised here.
 
     const proj = PROJECTS[project];
     if (!proj || !proj.tables.includes(table)) {
@@ -162,6 +255,20 @@ Deno.serve(async (req) => {
       }
     } else {
       return Response.json({ error: 'Invalid operation' }, { status: 400 });
+    }
+
+    // Server-side RBAC enforcement for flight_emails — the frontend's own
+    // accessScoped filter still runs too, but this is what actually closes
+    // the gap: a non-admin employee calling this function directly (curl,
+    // browser console, etc.) no longer receives the unscoped table.
+    if (project === 'automate' && table === 'flight_emails') {
+      const fusiooUrl = Deno.env.get(PROJECTS.fusioo.urlEnv);
+      const fusiooKey = Deno.env.get(PROJECTS.fusioo.keyEnv);
+      if (!fusiooUrl || !fusiooKey) {
+        return Response.json({ error: 'Missing Supabase credentials' }, { status: 500 });
+      }
+      const fusioo = createClient(fusiooUrl, fusiooKey);
+      rows = await scopeFlightEmailsRows(rows, requester, fusioo);
     }
 
     return Response.json({ rows });
