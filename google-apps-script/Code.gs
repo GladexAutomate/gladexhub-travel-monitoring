@@ -341,16 +341,35 @@ function checkSyncHeartbeat_() {
 
   Logger.log('checkSyncHeartbeat_: STALE — last successful run was ' + Math.round(minutesSinceLastRun) + ' minute(s) ago (threshold: ' + CONFIG.HEARTBEAT_STALE_MINUTES + ').');
 
+  // The ONE cause of "sync stopped" that a script can actually fix itself,
+  // no human needed: its own trigger got deleted. A real code bug or a
+  // quota limit still needs a person to look — those aren't something any
+  // code can self-repair — but a missing trigger is just recreating a
+  // config object, so do that automatically and say so in the alert.
+  const fetchNewEmailsTriggerExists = ScriptApp.getProjectTriggers().some(
+    function (t) { return t.getHandlerFunction() === 'fetchNewEmails'; }
+  );
+  let autoFixNote = '';
+  if (!fetchNewEmailsTriggerExists) {
+    ScriptApp.newTrigger('fetchNewEmails').timeBased().everyMinutes(5).create();
+    autoFixNote =
+      '\n\nAUTO-FIX APPLIED: the fetchNewEmails trigger was missing entirely — ' +
+      'this script just recreated it (every 5 minutes). If the sync is still ' +
+      'stale after this alert, the problem is something else (a script error ' +
+      'or quota), not a missing trigger.';
+    Logger.log('checkSyncHeartbeat_: fetchNewEmails trigger was missing — recreated it automatically.');
+  }
+
   if (alreadyAlerted) {
     Logger.log('checkSyncHeartbeat_: already alerted for this stale period, not sending again.');
     return;
   }
 
-  sendHeartbeatAlert_(lastRun, false);
+  sendHeartbeatAlert_(lastRun, false, autoFixNote);
   props.setProperty('HEARTBEAT_ALERT_SENT_FOR', lastRun);
 }
 
-function sendHeartbeatAlert_(lastRun, isDemo) {
+function sendHeartbeatAlert_(lastRun, isDemo, autoFixNote) {
   const subjectPrefix = isDemo ? '[DEMO — not a real alert] ' : '';
   MailApp.sendEmail(
     Session.getActiveUser().getEmail(),
@@ -366,7 +385,8 @@ function sendHeartbeatAlert_(lastRun, isDemo) {
       '- The script is hitting a persistent error every run (check the Executions log)\n' +
       '- A Google/Gmail/Supabase quota was exhausted\n\n' +
       'Check the Apps Script project\'s Executions page and Triggers page to diagnose. ' +
-      'You will not get another one of these alerts until the sync recovers and then goes stale again.'
+      'You will not get another one of these alerts until the sync recovers and then goes stale again.' +
+      (autoFixNote || '')
   );
 }
 
