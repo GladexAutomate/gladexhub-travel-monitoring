@@ -27,7 +27,6 @@ import {
   Archive,
   UserCircle,
   Tv,
-  Users,
 } from "lucide-react";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
@@ -157,6 +156,19 @@ async function selectFusiooAllRows(table, requesterEmail) {
 // "today" can shift the calendar day depending on the browser's timezone).
 function getPrimaryDepartureDate(record) {
   return record.flights?.[0]?.departure_date || null;
+}
+
+// received_date is a full timestamp (not a plain date string like
+// departure_date), so it needs converting to a local-timezone "YYYY-MM-DD"
+// key before it can be bucketed/compared against todayDateKey()/
+// yesterdayDateKey() the same way departure-date grouping already was.
+function getReceivedDateKey(record) {
+  if (!record.received_date) return null;
+  const d = new Date(record.received_date);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 // Historical backfills before this file's current CONFIG.HISTORICAL_AFTER_DATE
@@ -492,49 +504,21 @@ export default function AdminFlightManagement() {
       }
     });
 
-    const agentNameOf = (r) => gdxByBookingRef[r.booking_ref]?.agentName || "";
-    // Admin-like views group Team Leader first, then agent within that team,
-    // so the hierarchy reads Team Leader -> their agents -> bookings instead
-    // of one flat alphabetical list of agents mixed across teams. A
-    // team_leader's own view only ever has one team, so it stays agent-only.
-    // "￿" sorts unassigned-team bookings after every real team name.
-    const teamKeyOf = (r) => {
-      const team = agentPrimaryTeam[agentNameOf(r)];
-      return team ? team.toLowerCase() : "￿";
+    // Flat, newest-received-first — no more clustering everything under one
+    // agent/team header. Who handled a booking is still visible (as an
+    // inline tag on each row, see FlightRows), just not used to group rows
+    // together anymore; an admin scanning for "what just happened" no
+    // longer has to open every agent's own cluster to find it.
+    const byReceivedDateDesc = (a, b) => {
+      const ra = a.received_date || "";
+      const rb = b.received_date || "";
+      return ra < rb ? 1 : ra > rb ? -1 : 0;
     };
-
-    up.sort((a, b) => {
-      if (groupByAgent) {
-        if (isAdminLike) {
-          const teamCmp = teamKeyOf(a).localeCompare(teamKeyOf(b));
-          if (teamCmp !== 0) return teamCmp;
-        }
-        const agentCmp = agentNameOf(a).localeCompare(agentNameOf(b));
-        if (agentCmp !== 0) return agentCmp;
-      }
-      const da = getPrimaryDepartureDate(a);
-      const db = getPrimaryDepartureDate(b);
-      if (!da && !db) return 0;
-      if (!da) return 1; // no date sorts last
-      if (!db) return -1;
-      return da < db ? -1 : da > db ? 1 : 0;
-    });
-    arch.sort((a, b) => {
-      if (groupByAgent) {
-        if (isAdminLike) {
-          const teamCmp = teamKeyOf(a).localeCompare(teamKeyOf(b));
-          if (teamCmp !== 0) return teamCmp;
-        }
-        const agentCmp = agentNameOf(a).localeCompare(agentNameOf(b));
-        if (agentCmp !== 0) return agentCmp;
-      }
-      const da = getPrimaryDepartureDate(a);
-      const db = getPrimaryDepartureDate(b);
-      return da < db ? 1 : da > db ? -1 : 0; // descending — most recent past flight first
-    });
+    up.sort(byReceivedDateDesc);
+    arch.sort(byReceivedDateDesc);
 
     return { upcoming: up, archived: arch };
-  }, [filtered, todayKey, groupByAgent, isAdminLike, gdxByBookingRef, agentPrimaryTeam]);
+  }, [filtered, todayKey]);
 
   const upcomingPageCount = Math.max(1, Math.ceil(upcoming.length / PAGE_SIZE));
   const upcomingPage = Math.min(page, upcomingPageCount);
@@ -918,10 +902,8 @@ function groupLabelFor(dateKey, todayKey, yesterdayKey) {
 }
 
 function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByDate, todayKey, yesterdayKey, groupByAgent, isAdminLike, teamLeaderByTeam, agentPrimaryTeam, showDebugInfo }) {
-  let lastAgentKey;
-  let lastTeamKey;
   let lastDateKey;
-  let isFirstAgentGroup = true;
+  let isFirstDateGroup = true;
   const colSpanCount = 9;
 
   return rows.map((r) => {
@@ -936,76 +918,36 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
     // with the agent's real team on a handful of transactions.
     const agentTeam = agentPrimaryTeam?.[agentKey];
     const teamLeaderName = agentTeam ? teamLeaderByTeam?.[agentTeam] : null;
-    const teamKey = agentTeam || "__unassigned__";
 
-    // Admin-like views get a Team Leader header above the agent header (so
-    // the hierarchy reads Team Leader -> their agents -> bookings). A
-    // team_leader's own view only ever has one team, so it keeps the single
-    // agent-level header it always had.
-    let showTeamHeader = false;
-    if (groupByAgent && isAdminLike && teamKey !== lastTeamKey) {
-      showTeamHeader = true;
-      lastTeamKey = teamKey;
-      lastAgentKey = undefined; // force the agent header to also show
-    }
-    const showAgentHeader = groupByAgent && agentKey !== lastAgentKey;
-    // The real <thead> (FlightTableHeader) is already sitting right above
-    // the very first agent group, with nothing but its name in between — an
-    // immediate repeat there reads as a plain duplicate, not a helpful
-    // reminder. Only worth repeating once there's actually been a scroll
-    // past a previous group, so it starts at the SECOND agent onward.
-    const showColumnLabelsRow = showAgentHeader && !isFirstAgentGroup;
-    if (groupByAgent && agentKey !== lastAgentKey) {
-      lastAgentKey = agentKey;
-      lastDateKey = undefined;
-      isFirstAgentGroup = false;
-    }
-
-    const dateKey = getPrimaryDepartureDate(r);
+    // Sorted by received_date now (see the parent's useMemo), not clustered
+    // by agent/team anymore — who handled a booking is shown inline per row
+    // below instead. groupByAgent (true for admin-like/team_leader) still
+    // gates whether that inline tag is worth showing at all — a plain
+    // 'agent' viewer only ever sees their own bookings anyway.
+    const dateKey = getReceivedDateKey(r);
     const showGroupHeader = groupByDate && dateKey !== lastDateKey;
-    if (groupByDate) lastDateKey = dateKey;
+    // The real <thead> (FlightTableHeader) is already sitting right above
+    // the very first date group, with nothing but the filter bar in
+    // between — an immediate repeat there reads as a plain duplicate, not a
+    // helpful reminder. Only worth repeating once there's actually been a
+    // scroll past a previous group, so it starts at the SECOND date group
+    // onward.
+    const showColumnLabelsRow = showGroupHeader && !isFirstDateGroup;
+    if (groupByDate && dateKey !== lastDateKey) {
+      lastDateKey = dateKey;
+      isFirstDateGroup = false;
+    }
 
     return (
       <Fragment key={r.id}>
-        {showTeamHeader && (
-          <TableRow className="hover:bg-transparent border-0">
-            <TableCell colSpan={colSpanCount} className="pt-5 pb-1.5">
-              <div className="flex items-center gap-2">
-                <Users className="w-3.5 h-3.5 text-orange-600 shrink-0" />
-                <span className="text-[10px] font-bold uppercase tracking-wide text-orange-600">Team</span>
-                <span className="text-sm font-bold text-foreground">{agentTeam || "Unassigned"}</span>
-                <span className="text-xs text-muted-foreground">
-                  · Team Leader: {teamLeaderName || "not yet assigned"}
-                </span>
-              </div>
-            </TableCell>
-          </TableRow>
-        )}
-        {showAgentHeader && (
-          <TableRow className="hover:bg-transparent border-0">
-            <TableCell colSpan={colSpanCount} className={cn("pt-4 pb-1 border-t", isAdminLike && "pl-8")}>
-              <div className="flex items-center gap-2">
-                <UserCircle className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground/70">Agent</span>
-                <span className="text-[13px] font-semibold text-foreground/90">{agentKey}</span>
-                {!isAdminLike && (agentTeam || teamLeaderName) && (
-                  <span className="text-xs text-muted-foreground">
-                    · {agentTeam || "No team"}
-                    {teamLeaderName ? ` — Team Leader: ${teamLeaderName}` : ""}
-                  </span>
-                )}
-              </div>
-            </TableCell>
-          </TableRow>
-        )}
-        {showColumnLabelsRow && <FlightColumnLabelsRow />}
         {showGroupHeader && (
           <TableRow className="hover:bg-transparent border-0">
-            <TableCell colSpan={colSpanCount} className={cn("pt-1.5 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70", isAdminLike && "pl-12")}>
+            <TableCell colSpan={colSpanCount} className="pt-4 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70 border-t">
               {groupLabelFor(dateKey, todayKey, yesterdayKey)}
             </TableCell>
           </TableRow>
         )}
+        {showColumnLabelsRow && <FlightColumnLabelsRow />}
         <TableRow
           className="cursor-pointer hover:bg-muted/50"
           onClick={() => setExpandedId(isExpanded ? null : r.id)}
@@ -1016,7 +958,17 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
           <TableCell className="font-medium text-sm">{r.airline || "—"}</TableCell>
           <TableCell className="font-mono text-sm">{r.booking_ref || "—"}</TableCell>
           <TableCell className="font-mono text-sm">{gdxInfo?.gdx || "—"}</TableCell>
-          <TableCell className="text-sm">{gdxInfo?.clientName || "—"}</TableCell>
+          <TableCell className="text-sm">
+            {gdxInfo?.clientName || "—"}
+            {groupByAgent && (
+              <div className="flex items-center gap-1 mt-0.5 text-[11px] text-muted-foreground">
+                <UserCircle className="w-3 h-3 shrink-0" />
+                <span>{agentKey}</span>
+                {agentTeam && <span>· {agentTeam}</span>}
+                {isAdminLike && teamLeaderName && <span>— TL: {teamLeaderName}</span>}
+              </div>
+            )}
+          </TableCell>
           <TableCell><TypeBadge type={r.email_type} /></TableCell>
           <TableCell className="text-sm">
             {legs.map((f) => f.route).join(", ") || "—"}
