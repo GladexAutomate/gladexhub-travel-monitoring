@@ -26,7 +26,6 @@ const FUNCTION_ROUTES = {
   employeeList: '/api/employee-list',
   querySupabase: '/api/query-supabase',
   updateEmployeeAccount: '/api/update-employee-account',
-  resetEmployeePassword: '/api/reset-employee-password',
 };
 
 function isRunningOnBase44() {

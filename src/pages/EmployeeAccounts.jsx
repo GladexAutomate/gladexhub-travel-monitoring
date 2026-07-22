@@ -156,7 +156,7 @@ export default function EmployeeAccounts() {
             <div>
               <h1 className="text-2xl font-display font-bold">Accounts</h1>
               <p className="text-sm text-muted-foreground mt-1">
-                Employee login accounts — reset a password, change a role, or activate/deactivate access.
+                Employee login accounts — change a role or activate/deactivate access. Passwords are managed by the source account system, not here.
               </p>
             </div>
             <div className="flex items-center gap-3">
