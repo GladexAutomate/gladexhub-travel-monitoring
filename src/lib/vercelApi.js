@@ -20,6 +20,17 @@ import { appParams } from '@/lib/app-params';
 // Vercel /api/* path even while running ON Base44's hosting. Fixed by
 // checking window.location.hostname directly instead — self-contained, no
 // dependency on any env var being set correctly at build time.
+const STORAGE_KEY = 'gladex_flight_tracker_user';
+
+function getStoredToken() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? (JSON.parse(raw).token || null) : null;
+  } catch {
+    return null;
+  }
+}
+
 const FUNCTION_ROUTES = {
   employeeLogin: '/api/employee-login',
   validateSession: '/api/validate-session',
@@ -41,8 +52,11 @@ function isRunningOnBase44() {
 }
 
 export async function invokeApi(name, payload) {
+  const token = getStoredToken();
+  const enrichedPayload = token ? { ...payload, _token: token } : payload;
+
   if (isRunningOnBase44()) {
-    return base44.functions.invoke(name, payload);
+    return base44.functions.invoke(name, enrichedPayload);
   }
 
   const route = FUNCTION_ROUTES[name];
@@ -51,7 +65,7 @@ export async function invokeApi(name, payload) {
   const response = await fetch(route, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(enrichedPayload),
   });
 
   let data = null;

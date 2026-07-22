@@ -102,11 +102,9 @@ Deno.serve(async (req) => {
       return Response.json({ error: 'This account has been deactivated.' }, { status: 403 });
     }
 
+    const token = crypto.randomUUID();
+
     if (!local) {
-      // First-ever login for a real, active source account — lazily create
-      // the local role row instead of requiring a separate sync job to have
-      // run first. Defaults to 'agent' until an admin assigns something
-      // else. Ignores a duplicate-key race (23505) from a concurrent login.
       const { error: insertError } = await supabase.from('admin_accounts').insert({
         email,
         full_name: account.full_name || '',
@@ -114,12 +112,14 @@ Deno.serve(async (req) => {
         department: account.job_title || null,
         role: 'agent',
         is_active: true,
+        session_token: token,
       });
       if (insertError && insertError.code !== '23505') throw insertError;
+      if (insertError?.code === '23505') {
+        await supabase.from('admin_accounts').update({ session_token: token, last_login: new Date().toISOString() }).eq('email', email);
+      }
     } else {
-      supabase.from('admin_accounts').update({ last_login: new Date().toISOString() }).eq('id', local.id)
-        .then(() => {})
-        .catch(() => {});
+      await supabase.from('admin_accounts').update({ session_token: token, last_login: new Date().toISOString() }).eq('id', local.id);
     }
 
     const sessionUser = {
@@ -131,7 +131,7 @@ Deno.serve(async (req) => {
       team: (local && local.team_name) || '',
     };
 
-    return Response.json({ user: sessionUser });
+    return Response.json({ user: sessionUser, token });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }

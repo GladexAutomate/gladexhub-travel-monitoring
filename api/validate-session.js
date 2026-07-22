@@ -30,7 +30,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { email } = req.body || {};
+    const { email, _token } = req.body || {};
     const trimmed = (email || '').trim().toLowerCase();
     if (!trimmed) {
       return res.status(200).json({ valid: false, reason: 'No email provided' });
@@ -49,11 +49,18 @@ export default async function handler(req, res) {
     const supabase = createClient(automateUrl, serviceKey);
     const { data: localRows, error: localError } = await supabase
       .from('admin_accounts')
-      .select('role,team_name,role_override,is_active_override')
+      .select('role,team_name,role_override,is_active_override,session_token')
       .eq('email', trimmed)
       .limit(1);
     if (localError) throw localError;
     const local = localRows?.[0] || null;
+
+    // Token check — if the stored token doesn't match, invalidate the session.
+    // On first login the token is always stored before this runs, so a missing
+    // token in the DB means the row was pre-created without one (admin pre-assign).
+    if (local && local.session_token && local.session_token !== _token) {
+      return res.status(200).json({ valid: false, reason: 'invalid_token' });
+    }
 
     // An explicit admin override to deactivated always wins — no reason to
     // still trust "active" from upstream once an admin has said otherwise,

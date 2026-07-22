@@ -63,9 +63,10 @@ export function useAuth() {
         password,
       });
       const sessionUser = response.data?.user;
+      const token      = response.data?.token;
       if (!sessionUser) throw new Error('Invalid email/username or password.');
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(sessionUser));
-      setUser(sessionUser);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...sessionUser, token }));
+      setUser({ ...sessionUser, token });
       return sessionUser;
     } catch (err) {
       throw new Error(

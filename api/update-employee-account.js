@@ -15,7 +15,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { requesterEmail, targetEmail, role, is_active } = req.body || {};
+    const { requesterEmail, targetEmail, role, is_active, _token } = req.body || {};
     const requesterEmailLower = (requesterEmail || '').trim().toLowerCase();
     const targetEmailLower = (targetEmail || '').trim().toLowerCase();
     if (!requesterEmailLower || !targetEmailLower) {
@@ -31,12 +31,16 @@ export default async function handler(req, res) {
 
     const { data: requesterRows, error: requesterError } = await supabase
       .from('admin_accounts')
-      .select('role,role_override,is_active,is_active_override')
+      .select('role,role_override,is_active,is_active_override,session_token')
       .eq('email', requesterEmailLower)
       .limit(1);
     if (requesterError) throw requesterError;
     const requester = requesterRows?.[0];
     if (!requester) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    if (requester.session_token && requester.session_token !== _token) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 

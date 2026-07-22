@@ -9,7 +9,7 @@ const VALID_ROLES = ['agent', 'team_leader', 'hr', 'admin', 'super_admin'];
 
 Deno.serve(async (req) => {
   try {
-    const { requesterEmail, targetEmail, role, is_active } = await req.json();
+    const { requesterEmail, targetEmail, role, is_active, _token } = await req.json();
     const requesterEmailLower = (requesterEmail || '').trim().toLowerCase();
     const targetEmailLower = (targetEmail || '').trim().toLowerCase();
     if (!requesterEmailLower || !targetEmailLower) {
@@ -25,12 +25,16 @@ Deno.serve(async (req) => {
 
     const { data: requesterRows, error: requesterError } = await supabase
       .from('admin_accounts')
-      .select('role,role_override,is_active,is_active_override')
+      .select('role,role_override,is_active,is_active_override,session_token')
       .eq('email', requesterEmailLower)
       .limit(1);
     if (requesterError) throw requesterError;
     const requester = requesterRows?.[0];
     if (!requester) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    if (requester.session_token && requester.session_token !== _token) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
