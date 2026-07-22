@@ -163,20 +163,35 @@ async function fusiooSelectAllPaginated(fusioo, table) {
 }
 
 // Reads the pre-filtered/pre-sorted flight_emails copy from the
-// FlightEmailCache entity (refreshed every ~2 min by refreshFlightEmailsCache
+// FlightEmailCache entity (refreshed every 5 min by refreshFlightEmailsCache
 // + the scheduled workflow) instead of querying Supabase live. Skips the
 // expensive JSONB departure_date filter and the paginated source query on the
-// hot path (the dashboard's 60s poll, ~2-3k rows). RBAC scoping still runs
+// hot path (the dashboard's 60s poll, ~3.8k rows). RBAC scoping still runs
 // fresh on the returned rows below — the cache stores raw rows identical in
 // shape to flight_emails, so scopeFlightEmailsRows reads r.booking_ref
 // unchanged. Returns null when the cache is empty or the read throws so the
 // caller falls back to the direct flight_emails query (e.g. before the first
 // refresh has backfilled the cache).
+//
+// Profiling (3,840 records, cold): the SDK list() call accepts a limit up
+// to 5000 and returns that many in a single round trip. Fetching in one
+// call (limit 5000) measured 1.70s vs 2.85s for four 1000-row pages — the
+// per-call fixed overhead (network RTT + server query + JSON parse) is the
+// dominant cost, so fewer/larger calls win. The loop still paginates if
+// the set ever grows past 5000. Extraction (map r.payload) is 0ms.
+//
+// Hard floor: ~50% of the transferred bytes are entity overhead the
+// platform returns unconditionally (source_id, payload_hash, received_date
+// dup, id, created_date, updated_date, created_by_id, is_sample) — the SDK
+// exposes no field projection, so this can't be cut. The stored payload
+// itself is already only the fields the frontend renders (flights is the
+// bulk and all of it is used), so trimming it further saves <5%. Don't
+// add payload-compression workarounds — the gain is marginal and fragile.
 async function readFlightEmailsCache(req, ascending) {
   try {
     const b44 = createClientFromRequest(req);
     const sort = ascending ? 'received_date' : '-received_date';
-    const limit = 1000;
+    const limit = 5000;
     let skip = 0;
     const records = [];
     while (true) {
