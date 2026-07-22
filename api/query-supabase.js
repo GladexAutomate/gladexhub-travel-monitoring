@@ -195,7 +195,7 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body || {};
-    const { project, table, operation, requesterEmail } = body;
+    const { project, table, operation, requesterEmail, _token } = body;
 
     const emailLower = (requesterEmail || '').trim().toLowerCase();
     if (!emailLower) {
@@ -210,12 +210,20 @@ export default async function handler(req, res) {
     const local = createClient(automateUrl, serviceKey);
     const { data: requesterRows, error: requesterError } = await local
       .from('admin_accounts')
-      .select('full_name,role,team_name,role_override,is_active_override,is_active')
+      .select('full_name,role,team_name,role_override,is_active_override,is_active,session_token')
       .eq('email', emailLower)
       .limit(1);
     if (requesterError) throw requesterError;
     const requesterRow = requesterRows?.[0];
     if (!requesterRow) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Proof the caller actually authenticated, not just that they know an
+    // admin's email — this is the highest-value endpoint to guard (the only
+    // one returning bulk flight_emails business data), so it can't be
+    // skipped even though it wasn't in the original list of endpoints named.
+    if (requesterRow.session_token && requesterRow.session_token !== _token) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
