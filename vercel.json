@@ -1,5 +1,12 @@
 {
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
+  ],
+  "crons": [
+    { "path": "/api/sync-fusioo-data?apps=fusioo_booking_transactions", "schedule": "0 */2 * * *" },
+    { "path": "/api/sync-fusioo-data?apps=fusioo_ticket_details", "schedule": "5 */2 * * *" },
+    { "path": "/api/sync-fusioo-data?apps=fusioo_hotel_details", "schedule": "10 */2 * * *" },
+    { "path": "/api/sync-fusioo-data?apps=fusioo_tour_details", "schedule": "15 */2 * * *" },
+    { "path": "/api/sync-fusioo-data?apps=fusioo_transfer_details", "schedule": "20 */2 * * *" }
   ]
 }
