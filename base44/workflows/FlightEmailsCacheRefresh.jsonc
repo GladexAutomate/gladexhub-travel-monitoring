@@ -1,0 +1,45 @@
+{
+  "name": "Flight Emails Cache Refresh",
+  "description": "Refreshes the FlightEmailCache entity (pre-filtered/pre-sorted flight_emails copy) every 5 minutes \u2014 the platform's shortest allowed scheduled interval \u2014 so querySupabase reads flight_emails from the cache instead of querying Supabase live on every dashboard poll.",
+  "definition": {
+    "document": {
+      "dsl": "1.0.0",
+      "name": "flight_emails_cache_refresh_5min",
+      "version": "1.0",
+      "namespace": "base44"
+    },
+    "do": [
+      {
+        "refresh_cache": {
+          "call": "invoke_backend_function",
+          "with": {
+            "function_name": "refreshFlightEmailsCache",
+            "args": {}
+          },
+          "then": "end",
+          "x-base44": {
+            "title": "Refresh flight emails cache",
+            "description": "Update cached rows"
+          }
+        }
+      }
+    ]
+  },
+  "trigger": {
+    "condition": null,
+    "config": {
+      "trigger_type": "scheduled",
+      "events": [],
+      "schedule_mode": "recurring",
+      "cron_expression": "*/5 * * * *",
+      "one_time_date": null,
+      "timezone": "Asia/Shanghai",
+      "interval_value": null,
+      "interval_unit": null,
+      "interval_anchor": null,
+      "ends_type": "never",
+      "ends_on_date": null,
+      "ends_after_count": null
+    }
+  }
+}

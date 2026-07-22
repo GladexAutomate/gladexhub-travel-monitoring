@@ -1,4 +1,5 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.109.0';
+import { createClientFromRequest } from 'npm:@base44/sdk@0.8.38';
 
 // Flexible Supabase proxy for AdminFlightManagement.jsx's direct queries.
 // Requester role/team/active-state come from admin_accounts (local, fast —
@@ -161,6 +162,52 @@ async function fusiooSelectAllPaginated(fusioo, table) {
   return rows;
 }
 
+// Reads the pre-filtered/pre-sorted flight_emails copy from the
+// FlightEmailCache entity (refreshed every 5 min by refreshFlightEmailsCache
+// + the scheduled workflow) instead of querying Supabase live. Skips the
+// expensive JSONB departure_date filter and the paginated source query on the
+// hot path (the dashboard's 60s poll, ~3.8k rows). RBAC scoping still runs
+// fresh on the returned rows below — the cache stores raw rows identical in
+// shape to flight_emails, so scopeFlightEmailsRows reads r.booking_ref
+// unchanged. Returns null when the cache is empty or the read throws so the
+// caller falls back to the direct flight_emails query (e.g. before the first
+// refresh has backfilled the cache).
+//
+// Profiling (3,840 records, cold): the SDK list() call accepts a limit up
+// to 5000 and returns that many in a single round trip. Fetching in one
+// call (limit 5000) measured 1.70s vs 2.85s for four 1000-row pages — the
+// per-call fixed overhead (network RTT + server query + JSON parse) is the
+// dominant cost, so fewer/larger calls win. The loop still paginates if
+// the set ever grows past 5000. Extraction (map r.payload) is 0ms.
+//
+// Hard floor: ~50% of the transferred bytes are entity overhead the
+// platform returns unconditionally (source_id, payload_hash, received_date
+// dup, id, created_date, updated_date, created_by_id, is_sample) — the SDK
+// exposes no field projection, so this can't be cut. The stored payload
+// itself is already only the fields the frontend renders (flights is the
+// bulk and all of it is used), so trimming it further saves <5%. Don't
+// add payload-compression workarounds — the gain is marginal and fragile.
+async function readFlightEmailsCache(req, ascending) {
+  try {
+    const b44 = createClientFromRequest(req);
+    const sort = ascending ? 'received_date' : '-received_date';
+    const limit = 5000;
+    let skip = 0;
+    const records = [];
+    while (true) {
+      const page = await b44.asServiceRole.entities.FlightEmailCache.list(sort, limit, skip);
+      if (!page || page.length === 0) break;
+      records.push(...page);
+      if (page.length < limit) break;
+      skip += limit;
+    }
+    if (records.length === 0) return null;
+    return records.map((r) => r.payload);
+  } catch {
+    return null;
+  }
+}
+
 Deno.serve(async (req) => {
   try {
     const body = await req.json();
@@ -222,22 +269,34 @@ Deno.serve(async (req) => {
       if (cached && Date.now() - cached.at < RAW_ROWS_CACHE_TTL_MS) {
         rows = cached.rows;
       } else {
-        let from = 0;
-        while (true) {
-          let queryBuilder = supabase
-            .from(table)
-            .select(selectColumns)
-            .order(orderBy, { ascending });
-          if (minPrimaryDepartureDate) {
-            queryBuilder = queryBuilder.or(
-              `flights->0->>departure_date.gte.${minPrimaryDepartureDate},flights->0->>departure_date.is.null`
-            );
+        // For flight_emails with the canonical 2026-01-01 departure filter,
+        // read the pre-filtered/pre-sorted persistent cache entity instead of
+        // querying Supabase live (see readFlightEmailsCache above). A
+        // different minPrimaryDepartureDate would NOT match what the cache
+        // stores, so only use it for that exact value; otherwise fall through
+        // to the direct query.
+        if (project === 'automate' && table === 'flight_emails' && minPrimaryDepartureDate === '2026-01-01') {
+          const cachedRows = await readFlightEmailsCache(req, ascending);
+          if (cachedRows) rows = cachedRows;
+        }
+        if (rows.length === 0) {
+          let from = 0;
+          while (true) {
+            let queryBuilder = supabase
+              .from(table)
+              .select(selectColumns)
+              .order(orderBy, { ascending });
+            if (minPrimaryDepartureDate) {
+              queryBuilder = queryBuilder.or(
+                `flights->0->>departure_date.gte.${minPrimaryDepartureDate},flights->0->>departure_date.is.null`
+              );
+            }
+            const { data, error } = await queryBuilder.range(from, from + pageSize - 1);
+            if (error) throw error;
+            rows.push(...(data || []));
+            if (!data || data.length < pageSize) break;
+            from += pageSize;
           }
-          const { data, error } = await queryBuilder.range(from, from + pageSize - 1);
-          if (error) throw error;
-          rows.push(...(data || []));
-          if (!data || data.length < pageSize) break;
-          from += pageSize;
         }
         rawRowsCache.set(cacheKey, { rows, at: Date.now() });
       }

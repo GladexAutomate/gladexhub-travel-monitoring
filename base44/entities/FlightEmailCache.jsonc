@@ -1,0 +1,27 @@
+{
+  "name": "FlightEmailCache",
+  "type": "object",
+  "properties": {
+    "source_id": {
+      "type": "string",
+      "description": "flight_emails row id (stringified). Used by refreshFlightEmailsCache to diff against the source and keep this cache in sync."
+    },
+    "received_date": {
+      "type": "string",
+      "format": "date-time",
+      "description": "flight_emails received_date. querySupabase orders the cache by this (desc) so the dashboard's display order is preserved without re-sorting."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Full flight_emails row (all columns: booking_ref, flights, airline, email_type, received_date, etc.). Returned as-is by querySupabase so RBAC scoping reads r.booking_ref exactly like a live flight_emails row."
+    },
+    "payload_hash": {
+      "type": "string",
+      "description": "SHA-256 hex of JSON.stringify(payload). refreshFlightEmailsCache only re-writes a record when this changes, so steady-state refreshes do near-zero writes."
+    }
+  },
+  "required": [
+    "source_id",
+    "payload"
+  ]
+}
