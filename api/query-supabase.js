@@ -43,9 +43,13 @@ const PROJECTS = {
 };
 
 function chunkArray(items, size) {
+  // A caller-supplied chunkSize <= 0 would make `i += size` never advance,
+  // hanging this serverless invocation in an infinite loop until the
+  // platform kills it — guard against that instead of trusting the input.
+  const safeSize = size > 0 ? size : 150;
   const chunks = [];
-  for (let i = 0; i < items.length; i += size) {
-    chunks.push(items.slice(i, i + size));
+  for (let i = 0; i < items.length; i += safeSize) {
+    chunks.push(items.slice(i, i + safeSize));
   }
   return chunks;
 }
@@ -117,7 +121,13 @@ async function scopeFlightEmailsRows(rows, requester, fusioo) {
   tickets.forEach((t) => {
     const bookingId = (t.data.booking_transactions || [])[0] || null;
     const booking = bookingId ? bookingsById[bookingId] : null;
-    const agentName = (booking?.name_of_agent || [])[0] || null;
+    // Trimmed to match how primaryTeamByAgent's keys are built below
+    // (teamCounts is keyed by a trimmed agent name) — an untrimmed value
+    // here silently failed the primaryTeamByAgent[agentName] lookup for the
+    // team_leader path whenever Fusioo's name_of_agent had stray
+    // whitespace, dropping that booking from the team leader's view. The
+    // 'agent' path was unaffected since firstLastKey() already trims.
+    const agentName = ((booking?.name_of_agent || [])[0] || '').trim() || null;
     if (agentName) agentNameByBookingRef[t.data.booking_reference_number_pnr] = agentName;
   });
 
@@ -133,6 +143,22 @@ async function scopeFlightEmailsRows(rows, requester, fusioo) {
     return rows.filter((r) => firstLastKey(agentNameByBookingRef[r.booking_ref]) === myKey);
   }
 
+  const primaryTeamByAgent = await computePrimaryTeamByAgent(fusioo);
+  const myTeam = (requester.team_name || '').trim().toLowerCase();
+  return rows.filter((r) => {
+    const agentName = agentNameByBookingRef[r.booking_ref];
+    if (!agentName) return false;
+    return (primaryTeamByAgent[agentName] || '').trim().toLowerCase() === myTeam;
+  });
+}
+
+// Same aggregation AdminFlightManagement.jsx used to compute client-side
+// from a raw, unscoped fetch of the entire fusioo_booking_transactions
+// table (every client's name/mobile/email, company-wide) — moved server-
+// side so the frontend only ever receives the derived agent->team mapping,
+// never the underlying PII. Computed fresh per call (no cache) since it's
+// only requested every 30 minutes per the frontend's staleTime.
+async function computePrimaryTeamByAgent(fusioo) {
   const allBookings = await fusiooSelectAllPaginated(fusioo, 'fusioo_booking_transactions');
   const teamCounts = {};
   allBookings.forEach((b) => {
@@ -146,13 +172,7 @@ async function scopeFlightEmailsRows(rows, requester, fusioo) {
   Object.entries(teamCounts).forEach(([agent, counts]) => {
     primaryTeamByAgent[agent] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
   });
-
-  const myTeam = (requester.team_name || '').trim().toLowerCase();
-  return rows.filter((r) => {
-    const agentName = agentNameByBookingRef[r.booking_ref];
-    if (!agentName) return false;
-    return (primaryTeamByAgent[agentName] || '').trim().toLowerCase() === myTeam;
-  });
+  return primaryTeamByAgent;
 }
 
 async function fusiooFilterJsonbIn(fusioo, table, jsonbField, values) {
@@ -238,10 +258,41 @@ export default async function handler(req, res) {
       return res.status(403).json({ error: 'Account role not assigned' });
     }
     const requester = { full_name: requesterRow.full_name, role: requesterRole, team_name: requesterRow.team_name };
+    const isAdminLike = requesterRole === 'admin' || requesterRole === 'super_admin';
+
+    // Computed aggregate, not a raw table read — bypasses the project/table
+    // check below entirely since it never returns the underlying rows.
+    // Open to any active role (the mapping itself, "agent X is on team Y",
+    // isn't sensitive) — see computePrimaryTeamByAgent's own comment for why
+    // this exists as a separate operation instead of a raw selectAllPaginated.
+    if (operation === 'agentPrimaryTeamMap') {
+      const fusiooUrl = process.env[PROJECTS.fusioo.urlEnv];
+      const fusiooKey = process.env[PROJECTS.fusioo.keyEnv];
+      if (!fusiooUrl || !fusiooKey) {
+        return res.status(500).json({ error: 'Missing Supabase credentials' });
+      }
+      const fusioo = createClient(fusiooUrl, fusiooKey);
+      const primaryTeamByAgent = await computePrimaryTeamByAgent(fusioo);
+      return res.status(200).json({ primaryTeamByAgent });
+    }
 
     const proj = PROJECTS[project];
     if (!proj || !proj.tables.includes(table)) {
       return res.status(400).json({ error: 'Invalid project or table' });
+    }
+
+    // selectAllPaginated on a fusioo/sales table dumps that ENTIRE table —
+    // every client's name/mobile/email/ticket/hotel details, company-wide,
+    // with no scoping applied below (scopeFlightEmailsRows only ever covers
+    // project==='automate' && table==='flight_emails'). A plain 'agent' or
+    // 'team_leader' calling this operation directly (curl, browser console)
+    // against e.g. fusioo_booking_transactions would get the full company
+    // dataset instead of just their own bookings. selectAllOrdered is
+    // likewise a full-table read; the automate/flight_emails case is the
+    // only one that's actually scoped, so restrict both operations to
+    // admin-like roles on every OTHER project/table.
+    if (!isAdminLike && (operation === 'selectAllPaginated' || operation === 'selectAllOrdered') && !(project === 'automate' && table === 'flight_emails')) {
+      return res.status(403).json({ error: 'Insufficient permissions' });
     }
 
     const url = process.env[proj.urlEnv];
