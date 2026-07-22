@@ -505,6 +505,10 @@ const NOISE_SENDER_DOMAINS = [
   'mailer.ttgasia.com',
   'tuneprotect.com',
   'prulifeuk.com.ph',
+  // Zoom meeting notifications (e.g. "The meeting Japan Visa Training has
+  // been canceled") — matches on "canceled", an internal meeting, not a
+  // flight — found via a live run.
+  'zoom.us',
 ];
 
 // Subject substrings that are never a real flight disruption/change notice
@@ -532,6 +536,12 @@ const NOISE_SUBJECT_SUBSTRINGS = [
   // plausibly send a real flight itinerary from the same address someday,
   // and "stay at" would never appear in that subject.
   'itinerary - stay at',
+  // Same Expedia TAAP hotel-stay noise, but this time staff FORWARDING it
+  // to each other ("Fwd: TAAP travel confirmation - Jul 23 - (Itinerary
+  // #...)") — the sender is a real employee's own Gmail address (not an
+  // Expedia domain), so this can only be caught by subject, not by
+  // NOISE_SENDER_DOMAINS. Found via a live run.
+  'taap travel confirmation',
 ];
 
 function isLikelyNoise_(fromEmail, subject) {
