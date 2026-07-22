@@ -9,10 +9,17 @@ import { appParams } from '@/lib/app-params';
 // functions) and Base44 (its own Deno functions, base44/functions/*) —
 // Base44's hosting doesn't run our /api/*.js files, and Vercel doesn't run
 // Base44's functions, so a single hardcoded call style would only work on
-// one of the two. Detected by comparing the current origin against
-// appParams.appBaseUrl (Base44's real hosting URL) — running there means
-// call through the base44 SDK; anywhere else (Vercel, localhost dev) means
-// call our own same-origin /api/* route.
+// one of the two.
+//
+// BUG FIXED: originally detected by comparing the current origin against
+// appParams.appBaseUrl, which comes from import.meta.env.VITE_BASE44_APP_BASE_URL
+// — a build-time env var. On a live test on the real published Base44 site,
+// every call 405'd because that var isn't set during BASE44's OWN build
+// (only Vercel's build has it, since we added it there ourselves), so
+// appParams.appBaseUrl was empty and detection silently fell through to the
+// Vercel /api/* path even while running ON Base44's hosting. Fixed by
+// checking window.location.hostname directly instead — self-contained, no
+// dependency on any env var being set correctly at build time.
 const FUNCTION_ROUTES = {
   employeeLogin: '/api/employee-login',
   validateSession: '/api/validate-session',
@@ -24,6 +31,8 @@ const FUNCTION_ROUTES = {
 
 function isRunningOnBase44() {
   if (typeof window === 'undefined') return false;
+  const hostname = window.location.hostname;
+  if (hostname.endsWith('.base44.app')) return true;
   if (!appParams.appBaseUrl) return false;
   try {
     return new URL(appParams.appBaseUrl).origin === window.location.origin;
