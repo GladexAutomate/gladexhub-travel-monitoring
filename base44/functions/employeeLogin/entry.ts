@@ -1,173 +1,134 @@
-import { createClientFromRequest } from 'npm:@base44/sdk@0.8.31';
+import { createClient } from 'npm:@supabase/supabase-js@2.109.0';
 import bcrypt from 'npm:bcryptjs@2.4.3';
 
-// Employee login. Verifies against the bcrypt password_hash cached on
-// SyncedEmployee (refreshed every 5 min by syncEmployeeAccounts) so a
-// plain-text password only has to leave the external API once per sync
-// cycle, not on every single login attempt. Falls back to hitting the
-// live API directly only on a cache miss — a brand-new employee logging in
-// before the next sync — so onboarding isn't blocked by the 5-minute lag.
-
-// An admin-issued override always wins over whatever the synced/API value
-// still says — see role_override/is_active_override on the SyncedEmployee
-// entity. syncEmployeeAccounts never touches these two fields.
-function effectiveRole(e) {
-  return e.role_override || e.role || '';
+// Employee login — reads live from the boss's own real 'employeeaccount'
+// database on every attempt. No password is ever stored or cached in our
+// own database; only role/team_name live locally in admin_accounts, since
+// that assignment doesn't exist anywhere else. Replaces the old
+// SyncedEmployee-based version (that entity is deprecated) — ported
+// verbatim from api/employee-login.js (the Vercel version), tested there
+// against real data before being mirrored here.
+function constantTimeCompare(a, b) {
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return result === 0;
 }
-function effectiveActive(e) {
-  return e.is_active_override !== null && e.is_active_override !== undefined
-    ? e.is_active_override
-    : e.is_active;
+
+async function fetchAllEmployeeAccounts(sourceUrl, sourceKey) {
+  const rows = [];
+  const pageSize = 1000;
+  let from = 0;
+  while (true) {
+    const resp = await fetch(
+      `${sourceUrl}/rest/v1/employeeaccount?select=data&limit=${pageSize}&offset=${from}`,
+      { headers: { apikey: sourceKey, Authorization: `Bearer ${sourceKey}`, 'Accept-Profile': 'public' } }
+    );
+    if (!resp.ok) throw new Error(`Source fetch failed: ${resp.status} ${await resp.text()}`);
+    const page = await resp.json();
+    rows.push(...page.map((r) => r.data));
+    if (page.length < pageSize) break;
+    from += pageSize;
+  }
+  return rows;
 }
 
 Deno.serve(async (req) => {
   try {
-    const base44 = createClientFromRequest(req);
     const { identifier, password } = await req.json();
-
     const trimmed = (identifier || '').trim().toLowerCase();
     if (!trimmed || !password) {
-      return Response.json(
-        { error: 'Invalid email/username or password.' },
-        { status: 401 }
-      );
+      return Response.json({ error: 'Invalid email/username or password.' }, { status: 401 });
     }
 
-    const byEmail = await base44.asServiceRole.entities.SyncedEmployee.filter({ email: trimmed });
-    let cached = byEmail[0];
-    if (!cached) {
-      // employee_code isn't indexed on this entity — an occasional linear
-      // scan on cache-miss-by-email is fine, this isn't the hot path.
-      const all = await base44.asServiceRole.entities.SyncedEmployee.list();
-      cached = all.find((e) => (e.employee_code || '').toLowerCase() === trimmed);
+    const sourceUrl = Deno.env.get('EXTERNAL_ACCOUNTS_SOURCE_URL');
+    const sourceKey = Deno.env.get('EXTERNAL_ACCOUNTS_SOURCE_KEY_V2');
+    if (!sourceUrl || !sourceKey) {
+      return Response.json({ error: 'Server configuration error: missing accounts source credentials' }, { status: 500 });
     }
 
-    if (cached && (cached.password_override_hash || cached.password_hash)) {
-      // An admin-issued reset always wins over whatever the API still has
-      // on file — see password_override_hash's description on the entity.
-      const hashToCheck = cached.password_override_hash || cached.password_hash;
-      const passwordOk = bcrypt.compareSync(password, hashToCheck);
-      if (!passwordOk) {
-        return Response.json(
-          { error: 'Invalid email/username or password.' },
-          { status: 401 }
-        );
-      }
-      if (!effectiveActive(cached)) {
-        return Response.json(
-          { error: 'This account has been deactivated.' },
-          { status: 403 }
-        );
-      }
-
-      // Best-effort — a failed last_login stamp shouldn't block the login itself.
-      base44.asServiceRole.entities.SyncedEmployee.update(cached.id, {
-        last_login: new Date().toISOString(),
-      }).catch(() => {});
-
-      const sessionUser = {
-        name: cached.full_name,
-        email: cached.email,
-        employeeCode: cached.employee_code,
-        department: cached.department || '',
-        role: effectiveRole(cached),
-        team: cached.team_name || '',
-      };
-      return Response.json({ user: sessionUser });
-    }
-
-    // Cache miss (no SyncedEmployee row yet, or it has no password_hash —
-    // e.g. right after upgrading before the first re-sync) — hit the live
-    // API directly, same as before this change.
-    const apiUrl = Deno.env.get("ACCOUNTS_API_URL");
-    const apiKey = Deno.env.get("ACCOUNTS_API_KEY");
-
-    if (!apiUrl || !apiKey) {
-      return Response.json(
-        { error: 'Server configuration error: missing API credentials' },
-        { status: 500 }
-      );
-    }
-
-    const response = await fetch(apiUrl, {
-      headers: { 'x-api-key': apiKey },
+    const list = await fetchAllEmployeeAccounts(sourceUrl, sourceKey);
+    const account = list.find((a) => {
+      const email = (a.email || '').trim().toLowerCase();
+      const code = (a.employee_code || '').trim().toLowerCase();
+      return email === trimmed || (code && code === trimmed);
     });
 
-    if (!response.ok) {
-      return Response.json(
-        { error: 'Failed to reach accounts service' },
-        { status: 502 }
-      );
-    }
-
-    const raw = await response.json();
-    const list = Array.isArray(raw) ? raw : (raw.accounts || raw.data || raw.users || []);
-
-    const account = list.find(
-      (a) =>
-        (a.email || '').toLowerCase() === trimmed ||
-        (a.employee_code || '').toLowerCase() === trimmed
-    );
-
     if (!account) {
-      return Response.json(
-        { error: 'Invalid email/username or password.' },
-        { status: 401 }
-      );
+      return Response.json({ error: 'Invalid email/username or password.' }, { status: 401 });
     }
 
-    // The API returns plain-text generated_password (not bcrypt) — this
-    // fallback path only runs on a cache miss, bounding plain-text exposure
-    // to brand-new/not-yet-synced employees rather than every login.
-    const storedPassword = account.generated_password || account.password_hash || account.password;
-    if (!storedPassword) {
-      return Response.json(
-        { error: 'Account configuration error: no password set' },
-        { status: 500 }
-      );
-    }
+    const email = (account.email || '').trim().toLowerCase();
 
-    // Constant-time comparison to mitigate timing attacks on plain-text passwords.
-    function constantTimeCompare(a, b) {
-      if (a.length !== b.length) return false;
-      let result = 0;
-      for (let i = 0; i < a.length; i++) {
-        result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    const automateUrl = Deno.env.get('VITE_AUTOMATE_SUPABASE_URL');
+    const serviceKey = Deno.env.get('AUTOMATE_SUPABASE_SERVICE_ROLE_KEY');
+    if (!automateUrl || !serviceKey) {
+      return Response.json({ error: 'Server configuration error: missing local database credentials' }, { status: 500 });
+    }
+    const supabase = createClient(automateUrl, serviceKey);
+
+    const { data: localRows, error: localError } = await supabase
+      .from('admin_accounts')
+      .select('id,role,team_name,role_override,is_active_override,password_override_hash')
+      .eq('email', email)
+      .limit(1);
+    if (localError) throw localError;
+    const local = localRows?.[0] || null;
+
+    // An admin-issued reset always wins over the real source's password —
+    // see password_override_hash's purpose in admin_accounts_overrides.sql.
+    // Everyone else is verified live against the source's real password —
+    // never cached, never bcrypt-hashed here, matching the source's own
+    // plain-text storage (constant-time compare mitigates timing attacks).
+    let passwordOk;
+    if (local && local.password_override_hash) {
+      passwordOk = bcrypt.compareSync(password, local.password_override_hash);
+    } else {
+      const sourcePassword = account.generated_password || '';
+      if (!sourcePassword) {
+        return Response.json({ error: 'Account configuration error: no password set' }, { status: 500 });
       }
-      return result === 0;
+      passwordOk = constantTimeCompare(String(password), String(sourcePassword));
     }
-
-    const passwordOk = constantTimeCompare(String(password), String(storedPassword));
     if (!passwordOk) {
-      return Response.json(
-        { error: 'Invalid email/username or password.' },
-        { status: 401 }
-      );
+      return Response.json({ error: 'Invalid email/username or password.' }, { status: 401 });
     }
 
-    // Check active status — API uses status: "active", legacy used is_active: boolean.
-    // Fails closed (blocks when neither field is present) rather than open,
-    // but a record missing both fields entirely isn't necessarily an actual
-    // deactivation — give that case a distinct message so it's not confused
-    // with a real deactivation when diagnosing a login report. An admin
-    // override on a stale/cached record (if one exists) still wins.
-    const hasOverride = cached && cached.is_active_override !== null && cached.is_active_override !== undefined;
-    const hasStatusField = hasOverride || account.status !== undefined || account.is_active !== undefined;
-    const isActive = hasOverride ? cached.is_active_override : (account.status === 'active' || account.is_active === true);
+    const sourceActive = account.status === 'active';
+    const isActive = local && local.is_active_override !== null && local.is_active_override !== undefined
+      ? local.is_active_override
+      : sourceActive;
     if (!isActive) {
-      const message = hasStatusField
-        ? 'This account has been deactivated.'
-        : 'Account status could not be verified. Contact your administrator.';
-      return Response.json({ error: message }, { status: 403 });
+      return Response.json({ error: 'This account has been deactivated.' }, { status: 403 });
+    }
+
+    if (!local) {
+      // First-ever login for a real, active source account — lazily create
+      // the local role row instead of requiring a separate sync job to have
+      // run first. Defaults to 'agent' until an admin assigns something
+      // else. Ignores a duplicate-key race (23505) from a concurrent login.
+      const { error: insertError } = await supabase.from('admin_accounts').insert({
+        email,
+        full_name: account.full_name || '',
+        employee_code: account.employee_code || null,
+        department: account.job_title || null,
+        role: 'agent',
+        is_active: true,
+      });
+      if (insertError && insertError.code !== '23505') throw insertError;
+    } else {
+      supabase.from('admin_accounts').update({ last_login: new Date().toISOString() }).eq('id', local.id)
+        .then(() => {})
+        .catch(() => {});
     }
 
     const sessionUser = {
-      name: account.full_name,
-      email: account.email,
-      employeeCode: account.employee_code,
-      department: account.department || account.job_title || '',
-      role: (cached && cached.role_override) || account.role || '',
-      team: account.team_name || '',
+      name: account.full_name || '',
+      email,
+      employeeCode: account.employee_code || '',
+      department: account.job_title || '',
+      role: (local && (local.role_override || local.role)) || 'agent',
+      team: (local && local.team_name) || '',
     };
 
     return Response.json({ user: sessionUser });

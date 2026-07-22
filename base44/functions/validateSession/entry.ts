@@ -1,31 +1,72 @@
-import { createClientFromRequest } from 'npm:@base44/sdk@0.8.31';
+import { createClient } from 'npm:@supabase/supabase-js@2.109.0';
 
-// Session validation — checks whether the given email is still an active
-// employee in the synced cache. Called by the frontend every 5 minutes
-// (via useAuth) to detect deactivation without reloading the page.
+// Polled every 5 minutes by the frontend (useAuth) to detect deactivation
+// without a full page reload. Same live-read-through model as
+// employeeLogin — is_active is checked against the real source status (or
+// a local override), never a locally cached flag, since admin_accounts only
+// ever recorded is_active at the moment a row was created and never
+// updates it afterward. Ported verbatim from api/validate-session.js.
+async function fetchAllEmployeeAccounts(sourceUrl, sourceKey) {
+  const rows = [];
+  const pageSize = 1000;
+  let from = 0;
+  while (true) {
+    const resp = await fetch(
+      `${sourceUrl}/rest/v1/employeeaccount?select=data&limit=${pageSize}&offset=${from}`,
+      { headers: { apikey: sourceKey, Authorization: `Bearer ${sourceKey}`, 'Accept-Profile': 'public' } }
+    );
+    if (!resp.ok) throw new Error(`Source fetch failed: ${resp.status} ${await resp.text()}`);
+    const page = await resp.json();
+    rows.push(...page.map((r) => r.data));
+    if (page.length < pageSize) break;
+    from += pageSize;
+  }
+  return rows;
+}
+
 Deno.serve(async (req) => {
   try {
-    const base44 = createClientFromRequest(req);
     const { email } = await req.json();
-
-    if (!email) {
+    const trimmed = (email || '').trim().toLowerCase();
+    if (!trimmed) {
       return Response.json({ valid: false, reason: 'No email provided' });
     }
 
-    const employees = await base44.asServiceRole.entities.SyncedEmployee.filter({
-      email: email.toLowerCase(),
-    });
+    const sourceUrl = Deno.env.get('EXTERNAL_ACCOUNTS_SOURCE_URL');
+    const sourceKey = Deno.env.get('EXTERNAL_ACCOUNTS_SOURCE_KEY_V2');
+    const automateUrl = Deno.env.get('VITE_AUTOMATE_SUPABASE_URL');
+    const serviceKey = Deno.env.get('AUTOMATE_SUPABASE_SERVICE_ROLE_KEY');
+    if (!sourceUrl || !sourceKey || !automateUrl || !serviceKey) {
+      // On technical/config errors, don't log the user out — only explicit
+      // deactivation or removal should end a session.
+      return Response.json({ valid: true, reason: 'error', error: 'Server configuration error' });
+    }
 
-    const employee = employees[0];
-    if (!employee) {
+    const supabase = createClient(automateUrl, serviceKey);
+    const { data: localRows, error: localError } = await supabase
+      .from('admin_accounts')
+      .select('role,team_name,role_override,is_active_override')
+      .eq('email', trimmed)
+      .limit(1);
+    if (localError) throw localError;
+    const local = localRows?.[0] || null;
+
+    // An explicit admin override to deactivated always wins — no reason to
+    // still trust "active" from upstream once an admin has said otherwise,
+    // and it saves the live source fetch below.
+    if (local && local.is_active_override === false) {
+      return Response.json({ valid: false, reason: 'deactivated' });
+    }
+
+    const list = await fetchAllEmployeeAccounts(sourceUrl, sourceKey);
+    const account = list.find((a) => (a.email || '').trim().toLowerCase() === trimmed);
+    if (!account) {
       return Response.json({ valid: false, reason: 'not_found' });
     }
 
-    // An admin-issued override always wins over the synced value — see
-    // role_override/is_active_override on the SyncedEmployee entity.
-    const isActive = employee.is_active_override !== null && employee.is_active_override !== undefined
-      ? employee.is_active_override
-      : employee.is_active;
+    const isActive = local && local.is_active_override !== null && local.is_active_override !== undefined
+      ? local.is_active_override
+      : account.status === 'active';
     if (!isActive) {
       return Response.json({ valid: false, reason: 'deactivated' });
     }
@@ -33,12 +74,12 @@ Deno.serve(async (req) => {
     return Response.json({
       valid: true,
       user: {
-        name: employee.full_name,
-        email: employee.email,
-        employeeCode: employee.employee_code,
-        department: employee.department,
-        role: employee.role_override || employee.role,
-        team: employee.team_name,
+        name: account.full_name || '',
+        email: trimmed,
+        employeeCode: account.employee_code || '',
+        department: account.job_title || '',
+        role: (local && (local.role_override || local.role)) || 'agent',
+        team: (local && local.team_name) || '',
       },
     });
   } catch (error) {

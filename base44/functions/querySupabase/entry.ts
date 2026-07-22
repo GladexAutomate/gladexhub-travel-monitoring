@@ -1,14 +1,14 @@
-import { createClientFromRequest } from 'npm:@base44/sdk@0.8.38';
 import { createClient } from 'npm:@supabase/supabase-js@2.109.0';
 
-// Flexible Supabase proxy — the Base44 frontend can't read VITE_ env vars
-// at runtime (see src/lib/supabase*.js), so all direct Supabase queries
-// from AdminFlightManagement.jsx route through here. The backend reads
-// project credentials via Deno.env and validates every request against a
-// strict project + table whitelist.
-//
-// Uses the supabase-js client (same library as the frontend) so PostgREST
-// URL building / jsonb filter encoding is handled identically.
+// Flexible Supabase proxy for AdminFlightManagement.jsx's direct queries.
+// Requester role/team/active-state come from admin_accounts (local, fast —
+// this is a hot path, polled every 60s) instead of a live fetch of the real
+// source; validateSession is the authoritative freshness check for
+// deactivation, running independently every 5 minutes. Ported verbatim from
+// api/query-supabase.js (the Vercel version) — same RBAC scoping fix,
+// same server-side old-booking filter, same fetch-concurrency and
+// in-memory caching, same duplicate-record/garbage-booking-ref fixes found
+// while building and testing that version against real data.
 const PROJECTS = {
   automate: {
     urlEnv: 'VITE_AUTOMATE_SUPABASE_URL',
@@ -41,29 +41,55 @@ function chunkArray(items, size) {
   return chunks;
 }
 
-// Mirrors AdminFlightManagement.jsx's accessScoped/gdxByBookingRef exactly
-// (same join path, same trim/lowercase comparisons) — this used to be the
-// KNOWN GAP noted below: an active 'agent' or 'team_leader' could call this
-// function directly (bypassing the frontend's client-side filter entirely)
-// and receive the FULL, unscoped flight_emails table. Only applies to
-// flight_emails; every other table this function serves has no per-row RBAC
-// requirement to begin with.
-async function scopeFlightEmailsRows(rows, requester, fusioo) {
-  const role = requester.role_override || requester.role;
-  if (role === 'admin' || role === 'super_admin') return rows; // unrestricted, same as ADMIN_LIKE_ROLES client-side
+const MAX_CONCURRENT_FETCHES = 8;
+async function mapWithConcurrencyLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < items.length) {
+      const current = nextIndex++;
+      results[current] = await fn(items[current], current);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return results;
+}
 
-  // Anything other than agent/team_leader (e.g. 'hr', or no role) gets
-  // nothing — matches accessScoped's `return false` fallthrough exactly.
+// Short-lived, in-memory cache for selectAllOrdered — survives across
+// requests only while this function instance stays warm. Keyed on the
+// query shape, NOT the requester — the raw rows are identical for
+// everyone, RBAC scoping is applied fresh below on every request
+// regardless of whether the raw rows came from cache.
+const rawRowsCache = new Map();
+const RAW_ROWS_CACHE_TTL_MS = 20 * 1000;
+
+// First token + last token of a name, lowercased — drops any middle
+// name(s)/initial so "Jason Carl Santos" (Fusioo) and "JASON CARL TENORIO
+// SANTOS" (admin_accounts, the real full legal name) match.
+function firstLastKey(name) {
+  const tokens = (name || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return '';
+  return tokens[0] + ' ' + tokens[tokens.length - 1];
+}
+
+async function scopeFlightEmailsRows(rows, requester, fusioo) {
+  const role = requester.role;
+  if (role === 'admin' || role === 'super_admin') return rows;
   if (role !== 'agent' && role !== 'team_leader') return [];
 
-  const bookingRefs = Array.from(new Set(rows.map((r) => r.booking_ref).filter(Boolean)));
+  // Only PNR-shaped booking_refs can ever match a real Fusioo ticket — some
+  // flight_emails rows are needs_attention placeholders whose booking_ref
+  // is the raw email subject line (found on a live test: contained a ✈
+  // emoji and 100+ chars, which broke this query outright before this
+  // filter was added).
+  const bookingRefs = Array.from(new Set(
+    rows.map((r) => r.booking_ref).filter((ref) => typeof ref === 'string' && /^[A-Z0-9]{4,10}$/i.test(ref))
+  ));
   if (bookingRefs.length === 0) return [];
 
-  // Step 1: booking_ref -> fusioo_ticket_details.booking_transactions link.
   const tickets = await fusiooFilterJsonbIn(fusioo, 'fusioo_ticket_details', 'booking_reference_number_pnr', bookingRefs);
   const bookingIds = Array.from(new Set(tickets.flatMap((t) => t.data.booking_transactions || [])));
 
-  // Step 2: fusioo_booking_transactions.id -> name_of_agent (per-booking agent).
   const bookings = bookingIds.length ? await fusiooFilterIdIn(fusioo, 'fusioo_booking_transactions', bookingIds) : [];
   const bookingsById = Object.fromEntries(bookings.map((b) => [b.id, b.data]));
 
@@ -76,15 +102,10 @@ async function scopeFlightEmailsRows(rows, requester, fusioo) {
   });
 
   if (role === 'agent') {
-    const myName = (requester.full_name || '').trim().toLowerCase();
-    return rows.filter((r) => (agentNameByBookingRef[r.booking_ref] || '').trim().toLowerCase() === myName);
+    const myKey = firstLastKey(requester.full_name);
+    return rows.filter((r) => firstLastKey(agentNameByBookingRef[r.booking_ref]) === myKey);
   }
 
-  // team_leader: need each matched agent's PRIMARY team — majority vote
-  // across ALL of fusioo_booking_transactions (an agent's team tag varies
-  // per-transaction), same as agentPrimaryTeam client-side. This is a full
-  // table scan on every team_leader call — heavier than the agent path, but
-  // correctness here is the point of this fix, not speed.
   const allBookings = await fusiooSelectAllPaginated(fusioo, 'fusioo_booking_transactions');
   const teamCounts = {};
   allBookings.forEach((b) => {
@@ -108,25 +129,21 @@ async function scopeFlightEmailsRows(rows, requester, fusioo) {
 }
 
 async function fusiooFilterJsonbIn(fusioo, table, jsonbField, values) {
-  const results = await Promise.all(
-    chunkArray(values, 150).map(async (batch) => {
-      const quoted = batch.map((v) => `"${String(v).replace(/"/g, '\\"')}"`).join(',');
-      const { data, error } = await fusioo.from(table).select('id,data').filter(`data->>${jsonbField}`, 'in', `(${quoted})`);
-      if (error) throw error;
-      return data || [];
-    })
-  );
+  const results = await mapWithConcurrencyLimit(chunkArray(values, 150), MAX_CONCURRENT_FETCHES, async (batch) => {
+    const quoted = batch.map((v) => `"${String(v).replace(/"/g, '\\"')}"`).join(',');
+    const { data, error } = await fusioo.from(table).select('id,data').filter(`data->>${jsonbField}`, 'in', `(${quoted})`);
+    if (error) throw error;
+    return data || [];
+  });
   return results.flat();
 }
 
 async function fusiooFilterIdIn(fusioo, table, ids) {
-  const results = await Promise.all(
-    chunkArray(ids, 150).map(async (batch) => {
-      const { data, error } = await fusioo.from(table).select('id,data').in('id', batch);
-      if (error) throw error;
-      return data || [];
-    })
-  );
+  const results = await mapWithConcurrencyLimit(chunkArray(ids, 150), MAX_CONCURRENT_FETCHES, async (batch) => {
+    const { data, error } = await fusioo.from(table).select('id,data').in('id', batch);
+    if (error) throw error;
+    return data || [];
+  });
   return results.flat();
 }
 
@@ -146,38 +163,42 @@ async function fusiooSelectAllPaginated(fusioo, table) {
 
 Deno.serve(async (req) => {
   try {
-    const base44 = createClientFromRequest(req);
     const body = await req.json();
     const { project, table, operation, requesterEmail } = body;
 
-    // Flight-tracker auth: validate the caller is an active employee. NOT
-    // base44.auth.me() — flight tracker users authenticate via the
-    // employeeaccount table (see useAuth.js / employeeLogin), not base44
-    // auth, so there is no base44 token on the request. Same pattern as
-    // employeeList / validateSession.
     const emailLower = (requesterEmail || '').trim().toLowerCase();
     if (!emailLower) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
-    const requesterRows = await base44.asServiceRole.entities.SyncedEmployee.filter({
-      email: emailLower,
-    });
-    const requester = requesterRows[0];
-    if (!requester) {
+
+    const automateUrl = Deno.env.get('VITE_AUTOMATE_SUPABASE_URL');
+    const serviceKey = Deno.env.get('AUTOMATE_SUPABASE_SERVICE_ROLE_KEY');
+    if (!automateUrl || !serviceKey) {
+      return Response.json({ error: 'Missing Supabase credentials' }, { status: 500 });
+    }
+    const local = createClient(automateUrl, serviceKey);
+    const { data: requesterRows, error: requesterError } = await local
+      .from('admin_accounts')
+      .select('full_name,role,team_name,role_override,is_active_override,is_active')
+      .eq('email', emailLower)
+      .limit(1);
+    if (requesterError) throw requesterError;
+    const requesterRow = requesterRows?.[0];
+    if (!requesterRow) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
-    // An admin-issued override always wins over the synced value — see
-    // role_override/is_active_override on the SyncedEmployee entity.
-    const requesterActive = requester.is_active_override !== null && requester.is_active_override !== undefined
-      ? requester.is_active_override
-      : requester.is_active;
-    const requesterRole = requester.role_override || requester.role;
+
+    const requesterActive = requesterRow.is_active_override !== null && requesterRow.is_active_override !== undefined
+      ? requesterRow.is_active_override
+      : requesterRow.is_active;
+    const requesterRole = requesterRow.role_override || requesterRow.role;
     if (!requesterActive) {
       return Response.json({ error: 'Account deactivated' }, { status: 403 });
     }
     if (!requesterRole) {
       return Response.json({ error: 'Account role not assigned' }, { status: 403 });
     }
+    const requester = { full_name: requesterRow.full_name, role: requesterRole, team_name: requesterRow.team_name };
 
     const proj = PROJECTS[project];
     if (!proj || !proj.tables.includes(table)) {
@@ -194,53 +215,58 @@ Deno.serve(async (req) => {
     let rows = [];
 
     if (operation === 'selectAllOrdered') {
-      // Fetch every row ordered, paginating past PostgREST's default cap.
-      const { orderBy, ascending = false, selectColumns = '*', pageSize = 1000 } = body;
-      let from = 0;
-      while (true) {
+      const { orderBy, ascending = false, selectColumns = '*', pageSize = 1000, minPrimaryDepartureDate } = body;
+
+      const cacheKey = `${project}:${table}:${orderBy}:${ascending}:${selectColumns}:${minPrimaryDepartureDate || ''}`;
+      const cached = rawRowsCache.get(cacheKey);
+      if (cached && Date.now() - cached.at < RAW_ROWS_CACHE_TTL_MS) {
+        rows = cached.rows;
+      } else {
+        let from = 0;
+        while (true) {
+          let queryBuilder = supabase
+            .from(table)
+            .select(selectColumns)
+            .order(orderBy, { ascending });
+          if (minPrimaryDepartureDate) {
+            queryBuilder = queryBuilder.or(
+              `flights->0->>departure_date.gte.${minPrimaryDepartureDate},flights->0->>departure_date.is.null`
+            );
+          }
+          const { data, error } = await queryBuilder.range(from, from + pageSize - 1);
+          if (error) throw error;
+          rows.push(...(data || []));
+          if (!data || data.length < pageSize) break;
+          from += pageSize;
+        }
+        rawRowsCache.set(cacheKey, { rows, at: Date.now() });
+      }
+    } else if (operation === 'filterJsonbIn') {
+      const { jsonbField, values, selectColumns = 'data', chunkSize = 150 } = body;
+      if (!values || values.length === 0) return Response.json({ rows: [] });
+      const results = await mapWithConcurrencyLimit(chunkArray(values, chunkSize), MAX_CONCURRENT_FETCHES, async (batch) => {
+        const quoted = batch.map((v) => `"${String(v).replace(/"/g, '\\"')}"`).join(',');
         const { data, error } = await supabase
           .from(table)
           .select(selectColumns)
-          .order(orderBy, { ascending })
-          .range(from, from + pageSize - 1);
+          .filter(`data->>${jsonbField}`, 'in', `(${quoted})`);
         if (error) throw error;
-        rows.push(...(data || []));
-        if (!data || data.length < pageSize) break;
-        from += pageSize;
-      }
-    } else if (operation === 'filterJsonbIn') {
-      // Filter by data->>field in (val1, val2, ...) with URL-length batching.
-      const { jsonbField, values, selectColumns = 'data', chunkSize = 150 } = body;
-      if (!values || values.length === 0) return Response.json({ rows: [] });
-      const results = await Promise.all(
-        chunkArray(values, chunkSize).map(async (batch) => {
-          const quoted = batch.map((v) => `"${String(v).replace(/"/g, '\\"')}"`).join(',');
-          const { data, error } = await supabase
-            .from(table)
-            .select(selectColumns)
-            .filter(`data->>${jsonbField}`, 'in', `(${quoted})`);
-          if (error) throw error;
-          return data || [];
-        })
-      );
+        return data || [];
+      });
       rows = results.flat();
     } else if (operation === 'filterIdIn') {
-      // Filter by id in (id1, id2, ...) with URL-length batching.
       const { ids, selectColumns = 'data', chunkSize = 150 } = body;
       if (!ids || ids.length === 0) return Response.json({ rows: [] });
-      const results = await Promise.all(
-        chunkArray(ids, chunkSize).map(async (batch) => {
-          const { data, error } = await supabase
-            .from(table)
-            .select(selectColumns)
-            .in('id', batch);
-          if (error) throw error;
-          return data || [];
-        })
-      );
+      const results = await mapWithConcurrencyLimit(chunkArray(ids, chunkSize), MAX_CONCURRENT_FETCHES, async (batch) => {
+        const { data, error } = await supabase
+          .from(table)
+          .select(selectColumns)
+          .in('id', batch);
+        if (error) throw error;
+        return data || [];
+      });
       rows = results.flat();
     } else if (operation === 'selectAllPaginated') {
-      // Fetch every row (no filter, no order) with pagination.
       const { selectColumns = 'data', pageSize = 1000 } = body;
       let from = 0;
       while (true) {
@@ -257,10 +283,6 @@ Deno.serve(async (req) => {
       return Response.json({ error: 'Invalid operation' }, { status: 400 });
     }
 
-    // Server-side RBAC enforcement for flight_emails — the frontend's own
-    // accessScoped filter still runs too, but this is what actually closes
-    // the gap: a non-admin employee calling this function directly (curl,
-    // browser console, etc.) no longer receives the unscoped table.
     if (project === 'automate' && table === 'flight_emails') {
       const fusiooUrl = Deno.env.get(PROJECTS.fusioo.urlEnv);
       const fusiooKey = Deno.env.get(PROJECTS.fusioo.keyEnv);

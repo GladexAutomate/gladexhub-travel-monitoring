@@ -1,7 +1,18 @@
+import { base44 } from '@/api/base44Client';
+import { appParams } from '@/lib/app-params';
+
 // Drop-in replacement for base44.functions.invoke(name, payload) — same
 // call shape (returns { data }), same throw-on-non-2xx behavior every call
-// site already handles via `err.response?.data?.error || err.message` — but
-// hits our own same-origin Vercel /api/* functions instead of Base44.
+// site already handles via `err.response?.data?.error || err.message`.
+//
+// This same codebase now deploys to BOTH Vercel (our own /api/* serverless
+// functions) and Base44 (its own Deno functions, base44/functions/*) —
+// Base44's hosting doesn't run our /api/*.js files, and Vercel doesn't run
+// Base44's functions, so a single hardcoded call style would only work on
+// one of the two. Detected by comparing the current origin against
+// appParams.appBaseUrl (Base44's real hosting URL) — running there means
+// call through the base44 SDK; anywhere else (Vercel, localhost dev) means
+// call our own same-origin /api/* route.
 const FUNCTION_ROUTES = {
   employeeLogin: '/api/employee-login',
   validateSession: '/api/validate-session',
@@ -11,7 +22,21 @@ const FUNCTION_ROUTES = {
   resetEmployeePassword: '/api/reset-employee-password',
 };
 
+function isRunningOnBase44() {
+  if (typeof window === 'undefined') return false;
+  if (!appParams.appBaseUrl) return false;
+  try {
+    return new URL(appParams.appBaseUrl).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 export async function invokeApi(name, payload) {
+  if (isRunningOnBase44()) {
+    return base44.functions.invoke(name, payload);
+  }
+
   const route = FUNCTION_ROUTES[name];
   if (!route) throw new Error(`No /api/* route mapped for "${name}"`);
 

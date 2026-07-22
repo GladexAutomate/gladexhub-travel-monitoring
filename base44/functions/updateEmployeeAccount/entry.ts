@@ -1,29 +1,39 @@
-import { createClientFromRequest } from 'npm:@base44/sdk@0.8.31';
+import { createClient } from 'npm:@supabase/supabase-js@2.109.0';
 
-// Admin-only: sets role_override and/or is_active_override on an
-// employee's SyncedEmployee row. These two fields always take priority
-// over the synced role/is_active (see the entity description) and are
-// never touched by syncEmployeeAccounts, so a change here survives the
-// next 5-minute sync instead of being silently reverted.
+// super_admin-only: sets role_override and/or is_active_override on
+// admin_accounts, keyed by email now (no single entity id spans both the
+// local table and the live source). Upserts rather than requiring the row
+// to already exist — an admin can pre-assign a role to a real employee who
+// hasn't logged in yet. Ported verbatim from api/update-employee-account.js.
 const VALID_ROLES = ['agent', 'team_leader', 'hr', 'admin', 'super_admin'];
 
 Deno.serve(async (req) => {
   try {
-    const base44 = createClientFromRequest(req);
-    const { requesterEmail, targetId, role, is_active } = await req.json();
-
+    const { requesterEmail, targetEmail, role, is_active } = await req.json();
     const requesterEmailLower = (requesterEmail || '').trim().toLowerCase();
-    if (!requesterEmailLower || !targetId) {
+    const targetEmailLower = (targetEmail || '').trim().toLowerCase();
+    if (!requesterEmailLower || !targetEmailLower) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const requesterRows = await base44.asServiceRole.entities.SyncedEmployee.filter({
-      email: requesterEmailLower,
-    });
-    const requester = requesterRows[0];
+    const automateUrl = Deno.env.get('VITE_AUTOMATE_SUPABASE_URL');
+    const serviceKey = Deno.env.get('AUTOMATE_SUPABASE_SERVICE_ROLE_KEY');
+    if (!automateUrl || !serviceKey) {
+      return Response.json({ error: 'Server configuration error' }, { status: 500 });
+    }
+    const supabase = createClient(automateUrl, serviceKey);
+
+    const { data: requesterRows, error: requesterError } = await supabase
+      .from('admin_accounts')
+      .select('role,role_override,is_active,is_active_override')
+      .eq('email', requesterEmailLower)
+      .limit(1);
+    if (requesterError) throw requesterError;
+    const requester = requesterRows?.[0];
     if (!requester) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
+
     const requesterActive = requester.is_active_override !== null && requester.is_active_override !== undefined
       ? requester.is_active_override
       : requester.is_active;
@@ -35,7 +45,7 @@ Deno.serve(async (req) => {
       return Response.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
 
-    if (requester.id === targetId) {
+    if (requesterEmailLower === targetEmailLower) {
       return Response.json({ error: "Can't change your own role or status here." }, { status: 400 });
     }
 
@@ -43,20 +53,15 @@ Deno.serve(async (req) => {
       return Response.json({ error: `Invalid role: ${role}` }, { status: 400 });
     }
 
-    const target = await base44.asServiceRole.entities.SyncedEmployee.get(targetId);
-    if (!target) {
-      return Response.json({ error: 'Employee not found' }, { status: 404 });
-    }
-
-    const patch = {};
+    const patch = { email: targetEmailLower };
     if (role !== undefined) patch.role_override = role;
     if (is_active !== undefined) patch.is_active_override = is_active;
-
-    if (Object.keys(patch).length === 0) {
+    if (Object.keys(patch).length === 1) {
       return Response.json({ error: 'Nothing to update' }, { status: 400 });
     }
 
-    await base44.asServiceRole.entities.SyncedEmployee.update(targetId, patch);
+    const { error: upsertError } = await supabase.from('admin_accounts').upsert(patch, { onConflict: 'email' });
+    if (upsertError) throw upsertError;
 
     return Response.json({ success: true });
   } catch (error) {
