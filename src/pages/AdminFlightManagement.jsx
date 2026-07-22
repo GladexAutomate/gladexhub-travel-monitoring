@@ -71,7 +71,15 @@ function TypeBadge({ type }) {
 function formatDate(value, pattern = "MMM d, yyyy") {
   if (!value) return "—";
   try {
-    return format(new Date(value), pattern);
+    // Plain "YYYY-MM-DD" strings (departure_date/arrival_date, received-date
+    // group keys) must be parsed as LOCAL, not UTC — new Date("2026-07-22")
+    // parses as UTC midnight per spec, which date-fns then renders using the
+    // browser's local time components, showing the PREVIOUS day for anyone
+    // west of UTC. Full timestamps (received_date) are unaffected and parse
+    // normally.
+    const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+    const date = isDateOnly ? new Date(`${value}T00:00:00`) : new Date(value);
+    return format(date, pattern);
   } catch {
     return value;
   }
@@ -138,15 +146,19 @@ async function selectFusiooByIds(table, ids, requesterEmail) {
   }
 }
 
-async function selectFusiooAllRows(table, requesterEmail) {
+// Computes the agent->primary-team mapping entirely server-side — the
+// aggregate itself (not the underlying per-client PII) is all this page
+// needs, and the backend never has to hand back the raw company-wide
+// fusioo_booking_transactions table to do it.
+async function fetchAgentPrimaryTeamMap(requesterEmail) {
   try {
     const response = await invokeApi('querySupabase', {
       project: 'fusioo',
-      table,
-      operation: 'selectAllPaginated',
+      table: 'fusioo_booking_transactions',
+      operation: 'agentPrimaryTeamMap',
       requesterEmail,
     });
-    return (response.data.rows || []).map((row) => row.data);
+    return response.data.primaryTeamByAgent || {};
   } catch (err) {
     throw invokeError(err);
   }
@@ -385,26 +397,16 @@ export default function AdminFlightManagement() {
   // subset can be small/skewed for an agent with few linked emails and give
   // the wrong majority. Used for the team_leader RBAC boundary below and for
   // the admin/developer Team filter, so both agree on who's on which team.
+  // The aggregation itself runs server-side (see agentPrimaryTeamMap in
+  // query-supabase.js) — this used to fetch the ENTIRE company-wide
+  // fusioo_booking_transactions table (every client's name/mobile/email)
+  // straight to the browser just to compute this majority-vote map
+  // client-side, which any team_leader (not just admins) could trigger.
   const { data: agentPrimaryTeam = {} } = useQuery({
     queryKey: ["fusioo_agent_team_roster"],
     enabled: groupByAgent && !!user?.email,
     staleTime: 30 * 60 * 1000,
-    queryFn: async () => {
-      const rows = await selectFusiooAllRows("fusioo_booking_transactions", user?.email);
-      const counts = {};
-      rows.forEach((b) => {
-        const agent = ((b.name_of_agent || [])[0] || "").trim();
-        const team = ((b.agent_name || [])[0] || "").trim();
-        if (!agent || !team) return;
-        counts[agent] = counts[agent] || {};
-        counts[agent][team] = (counts[agent][team] || 0) + 1;
-      });
-      const primary = {};
-      Object.entries(counts).forEach(([agent, teamCounts]) => {
-        primary[agent] = Object.entries(teamCounts).sort((a, b) => b[1] - a[1])[0][0];
-      });
-      return primary;
-    },
+    queryFn: () => fetchAgentPrimaryTeamMap(user?.email),
   });
 
   // RBAC boundary — applied before the user-facing filters below, since this
@@ -470,8 +472,13 @@ export default function AdminFlightManagement() {
       const matchesAgent = agentFilter === "all" || gdxInfo?.agentName === agentFilter;
 
       const receivedDate = r.received_date ? new Date(r.received_date) : null;
-      const matchesFrom = !dateFrom || (receivedDate && receivedDate >= new Date(dateFrom));
-      const matchesTo = !dateTo || (receivedDate && receivedDate <= new Date(dateTo + "T23:59:59"));
+      // Both bounds built the same way (a local-time datetime string with no
+      // offset) so they parse under the same rule — new Date("2026-07-22")
+      // alone parses as UTC midnight while new Date("2026-07-22T23:59:59")
+      // parses as local time, so the old "From" bound sat up to a UTC
+      // offset's worth of hours later than intended for anyone east of UTC.
+      const matchesFrom = !dateFrom || (receivedDate && receivedDate >= new Date(`${dateFrom}T00:00:00`));
+      const matchesTo = !dateTo || (receivedDate && receivedDate <= new Date(`${dateTo}T23:59:59`));
 
       const routes = (r.flights || []).map((f) => f.route).join(" ").toLowerCase();
       const matchesSearch =
@@ -536,16 +543,22 @@ export default function AdminFlightManagement() {
   const archivePageItems = archived.slice((archivePageSafe - 1) * PAGE_SIZE, archivePageSafe * PAGE_SIZE);
   const archiveRange = paginationRange(archivePageSafe, PAGE_SIZE, archived.length);
 
+  // Sourced from `filtered` (RBAC + the active search/type/airline/team/
+  // agent/date-range filters), not the broader `accessScoped` — these cards
+  // sit right above a table titled "Flight Emails (N)" that reflects those
+  // same filters, so a filtered-out row must not still count in the totals
+  // above it (e.g. Type=Cancellation showing a table of only cancellations
+  // while "Confirmations"/"Reschedules" still displayed unfiltered numbers).
   const stats = useMemo(
     () => ({
-      total: accessScoped.length,
-      confirmation: accessScoped.filter((r) => r.email_type === "confirmation").length,
-      reschedule: accessScoped.filter((r) => r.email_type === "reschedule").length,
-      cancellation: accessScoped.filter((r) => r.email_type === "cancellation").length,
-      departingToday: accessScoped.filter((r) => getPrimaryDepartureDate(r) === todayKey).length,
-      arrivingToday: accessScoped.filter((r) => getPrimaryArrivalDate(r) === todayKey).length,
+      total: filtered.length,
+      confirmation: filtered.filter((r) => r.email_type === "confirmation").length,
+      reschedule: filtered.filter((r) => r.email_type === "reschedule").length,
+      cancellation: filtered.filter((r) => r.email_type === "cancellation").length,
+      departingToday: filtered.filter((r) => getPrimaryDepartureDate(r) === todayKey).length,
+      arrivingToday: filtered.filter((r) => getPrimaryArrivalDate(r) === todayKey).length,
     }),
-    [accessScoped, todayKey]
+    [filtered, todayKey]
   );
 
   // Team Leader lookup (team_name -> leader's full_name), sourced from
