@@ -211,7 +211,7 @@ async function readFlightEmailsCache(req, ascending) {
 Deno.serve(async (req) => {
   try {
     const body = await req.json();
-    const { project, table, operation, requesterEmail } = body;
+    const { project, table, operation, requesterEmail, _token } = body;
 
     const emailLower = (requesterEmail || '').trim().toLowerCase();
     if (!emailLower) {
@@ -226,12 +226,20 @@ Deno.serve(async (req) => {
     const local = createClient(automateUrl, serviceKey);
     const { data: requesterRows, error: requesterError } = await local
       .from('admin_accounts')
-      .select('full_name,role,team_name,role_override,is_active_override,is_active')
+      .select('full_name,role,team_name,role_override,is_active_override,is_active,session_token')
       .eq('email', emailLower)
       .limit(1);
     if (requesterError) throw requesterError;
     const requesterRow = requesterRows?.[0];
     if (!requesterRow) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Proof the caller actually authenticated, not just that they know an
+    // admin's email — this is the highest-value endpoint to guard (the only
+    // one returning bulk flight_emails business data), so it can't be
+    // skipped even though it wasn't in the original list of endpoints named.
+    if (requesterRow.session_token && requesterRow.session_token !== _token) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
 

@@ -25,7 +25,7 @@ async function fetchAllEmployeeAccounts(sourceUrl, sourceKey) {
 
 Deno.serve(async (req) => {
   try {
-    const { requesterEmail } = await req.json();
+    const { requesterEmail, _token } = await req.json();
     const requesterEmailLower = (requesterEmail || '').trim().toLowerCase();
     if (!requesterEmailLower) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
@@ -41,7 +41,7 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(automateUrl, serviceKey);
     const [{ data: localAll, error: localError }, sourceList] = await Promise.all([
-      supabase.from('admin_accounts').select('email,role,team_name,role_override,is_active_override'),
+      supabase.from('admin_accounts').select('email,role,team_name,role_override,is_active_override,session_token'),
       fetchAllEmployeeAccounts(sourceUrl, sourceKey),
     ]);
     if (localError) throw localError;
@@ -60,6 +60,10 @@ Deno.serve(async (req) => {
     const requesterLocal = localByEmail[requesterEmailLower];
     const requesterSource = sourceByEmail[requesterEmailLower];
     if (!requesterSource) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    if (requesterLocal?.session_token && requesterLocal.session_token !== _token) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
 

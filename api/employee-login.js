@@ -104,11 +104,9 @@ export default async function handler(req, res) {
       return res.status(403).json({ error: 'This account has been deactivated.' });
     }
 
+    const token = crypto.randomUUID();
+
     if (!local) {
-      // First-ever login for a real, active source account — lazily create
-      // the local role row instead of requiring a separate sync job to have
-      // run first. Defaults to 'agent' until an admin assigns something
-      // else. Ignores a duplicate-key race (23505) from a concurrent login.
       const { error: insertError } = await supabase.from('admin_accounts').insert({
         email,
         full_name: account.full_name || '',
@@ -116,13 +114,14 @@ export default async function handler(req, res) {
         department: account.job_title || null,
         role: 'agent',
         is_active: true,
+        session_token: token,
       });
       if (insertError && insertError.code !== '23505') throw insertError;
+      if (insertError?.code === '23505') {
+        await supabase.from('admin_accounts').update({ session_token: token, last_login: new Date().toISOString() }).eq('email', email);
+      }
     } else {
-      // Best-effort — a failed last_login stamp shouldn't block the login itself.
-      supabase.from('admin_accounts').update({ last_login: new Date().toISOString() }).eq('id', local.id)
-        .then(() => {})
-        .catch(() => {});
+      await supabase.from('admin_accounts').update({ session_token: token, last_login: new Date().toISOString() }).eq('id', local.id);
     }
 
     const sessionUser = {
@@ -134,7 +133,7 @@ export default async function handler(req, res) {
       team: (local && local.team_name) || '',
     };
 
-    return res.status(200).json({ user: sessionUser });
+    return res.status(200).json({ user: sessionUser, token });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

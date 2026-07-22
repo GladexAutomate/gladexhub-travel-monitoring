@@ -28,7 +28,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { requesterEmail } = req.body || {};
+    const { requesterEmail, _token } = req.body || {};
     const requesterEmailLower = (requesterEmail || '').trim().toLowerCase();
     if (!requesterEmailLower) {
       return res.status(401).json({ error: 'Unauthorized' });
@@ -44,7 +44,7 @@ export default async function handler(req, res) {
 
     const supabase = createClient(automateUrl, serviceKey);
     const [{ data: localAll, error: localError }, sourceList] = await Promise.all([
-      supabase.from('admin_accounts').select('email,role,team_name,role_override,is_active_override'),
+      supabase.from('admin_accounts').select('email,role,team_name,role_override,is_active_override,session_token'),
       fetchAllEmployeeAccounts(sourceUrl, sourceKey),
     ]);
     if (localError) throw localError;
@@ -63,6 +63,10 @@ export default async function handler(req, res) {
     const requesterLocal = localByEmail[requesterEmailLower];
     const requesterSource = sourceByEmail[requesterEmailLower];
     if (!requesterSource) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    if (requesterLocal?.session_token && requesterLocal.session_token !== _token) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 

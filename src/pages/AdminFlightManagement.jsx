@@ -27,6 +27,8 @@ import {
   Archive,
   UserCircle,
   Tv,
+  PlaneTakeoff,
+  PlaneLanding,
 } from "lucide-react";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
@@ -156,6 +158,10 @@ async function selectFusiooAllRows(table, requesterEmail) {
 // "today" can shift the calendar day depending on the browser's timezone).
 function getPrimaryDepartureDate(record) {
   return record.flights?.[0]?.departure_date || null;
+}
+
+function getPrimaryArrivalDate(record) {
+  return record.flights?.[0]?.arrival_date || null;
 }
 
 // received_date is a full timestamp (not a plain date string like
@@ -536,8 +542,10 @@ export default function AdminFlightManagement() {
       confirmation: accessScoped.filter((r) => r.email_type === "confirmation").length,
       reschedule: accessScoped.filter((r) => r.email_type === "reschedule").length,
       cancellation: accessScoped.filter((r) => r.email_type === "cancellation").length,
+      departingToday: accessScoped.filter((r) => getPrimaryDepartureDate(r) === todayKey).length,
+      arrivingToday: accessScoped.filter((r) => getPrimaryArrivalDate(r) === todayKey).length,
     }),
-    [accessScoped]
+    [accessScoped, todayKey]
   );
 
   // Team Leader lookup (team_name -> leader's full_name), sourced from
@@ -569,7 +577,7 @@ export default function AdminFlightManagement() {
     [employeeAccounts]
   );
 
-  const colSpanCount = 9;
+  const colSpanCount = 10;
 
   return (
     <div className="min-h-screen flex bg-background">
@@ -620,11 +628,13 @@ export default function AdminFlightManagement() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
             <StatCard label="Total Flights" value={stats.total} icon={Plane} />
             <StatCard label="Confirmations" value={stats.confirmation} icon={CheckCircle2} accent="text-emerald-600" iconBg="bg-emerald-50" />
             <StatCard label="Reschedules" value={stats.reschedule} icon={RotateCcw} accent="text-orange-600" iconBg="bg-orange-50" />
             <StatCard label="Cancellations" value={stats.cancellation} icon={XCircle} accent="text-red-600" iconBg="bg-red-50" />
+            <StatCard label="Departing Today" value={stats.departingToday} icon={PlaneTakeoff} accent="text-blue-600" iconBg="bg-blue-50" />
+            <StatCard label="Arriving Today" value={stats.arrivingToday} icon={PlaneLanding} accent="text-purple-600" iconBg="bg-purple-50" />
           </div>
 
           <Card className="border-0 shadow-sm">
@@ -866,6 +876,7 @@ function FlightTableHeader() {
         <TableHead className={HEADER_CELL_CLASS}>Type</TableHead>
         <TableHead className={HEADER_CELL_CLASS}>Route/s</TableHead>
         <TableHead className={cn(HEADER_CELL_CLASS, "hidden md:table-cell")}>Departure Date</TableHead>
+        <TableHead className={cn(HEADER_CELL_CLASS, "hidden md:table-cell")}>Arrival Date</TableHead>
         <TableHead className={cn(HEADER_CELL_CLASS, "hidden md:table-cell")}>Received Date</TableHead>
       </TableRow>
     </TableHeader>
@@ -889,6 +900,7 @@ function FlightColumnLabelsRow() {
       <TableHead className={HEADER_CELL_CLASS}>Type</TableHead>
       <TableHead className={HEADER_CELL_CLASS}>Route/s</TableHead>
       <TableHead className={cn(HEADER_CELL_CLASS, "hidden md:table-cell")}>Departure Date</TableHead>
+      <TableHead className={cn(HEADER_CELL_CLASS, "hidden md:table-cell")}>Arrival Date</TableHead>
       <TableHead className={cn(HEADER_CELL_CLASS, "hidden md:table-cell")}>Received Date</TableHead>
     </TableRow>
   );
@@ -904,7 +916,7 @@ function groupLabelFor(dateKey, todayKey, yesterdayKey) {
 function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByDate, todayKey, yesterdayKey, groupByAgent, isAdminLike, teamLeaderByTeam, agentPrimaryTeam, showDebugInfo }) {
   let lastDateKey;
   let isFirstDateGroup = true;
-  const colSpanCount = 9;
+  const colSpanCount = 10;
 
   return rows.map((r) => {
     const legs = r.flights || [];
@@ -975,6 +987,7 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
             {tripType && <span className="ml-1.5 text-[10px] text-muted-foreground">({tripType})</span>}
           </TableCell>
           <TableCell className="hidden md:table-cell text-sm">{formatDate(legs[0]?.departure_date)}</TableCell>
+          <TableCell className="hidden md:table-cell text-sm">{formatDate(legs[0]?.arrival_date)}</TableCell>
           <TableCell className="hidden md:table-cell text-sm">{formatDate(r.received_date, "MMM d, yyyy h:mm a")}</TableCell>
         </TableRow>
         {isExpanded && (

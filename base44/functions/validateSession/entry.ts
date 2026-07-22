@@ -26,7 +26,7 @@ async function fetchAllEmployeeAccounts(sourceUrl, sourceKey) {
 
 Deno.serve(async (req) => {
   try {
-    const { email } = await req.json();
+    const { email, _token } = await req.json();
     const trimmed = (email || '').trim().toLowerCase();
     if (!trimmed) {
       return Response.json({ valid: false, reason: 'No email provided' });
@@ -45,11 +45,15 @@ Deno.serve(async (req) => {
     const supabase = createClient(automateUrl, serviceKey);
     const { data: localRows, error: localError } = await supabase
       .from('admin_accounts')
-      .select('role,team_name,role_override,is_active_override')
+      .select('role,team_name,role_override,is_active_override,session_token')
       .eq('email', trimmed)
       .limit(1);
     if (localError) throw localError;
     const local = localRows?.[0] || null;
+
+    if (local && local.session_token && local.session_token !== _token) {
+      return Response.json({ valid: false, reason: 'invalid_token' });
+    }
 
     // An explicit admin override to deactivated always wins — no reason to
     // still trust "active" from upstream once an admin has said otherwise,
