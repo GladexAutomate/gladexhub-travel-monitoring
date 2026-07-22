@@ -970,14 +970,19 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
           <TableCell className="font-medium text-sm">{r.airline || "—"}</TableCell>
           <TableCell className="font-mono text-sm">{r.booking_ref || "—"}</TableCell>
           <TableCell className="font-mono text-sm">{gdxInfo?.gdx || "—"}</TableCell>
-          <TableCell className="text-sm">
-            {gdxInfo?.clientName || "—"}
+          <TableCell className="text-sm max-w-[200px]">
+            <div className="truncate">{gdxInfo?.clientName || "—"}</div>
             {groupByAgent && (
-              <div className="flex items-center gap-1 mt-0.5 text-[11px] text-muted-foreground">
+              <div
+                className="flex items-center gap-1 mt-0.5 min-w-0 text-[11px] text-muted-foreground"
+                title={`${agentKey}${agentTeam ? ` · ${agentTeam}` : ""}${isAdminLike && teamLeaderName ? ` — TL: ${teamLeaderName}` : ""}`}
+              >
                 <UserCircle className="w-3 h-3 shrink-0" />
-                <span>{agentKey}</span>
-                {agentTeam && <span>· {agentTeam}</span>}
-                {isAdminLike && teamLeaderName && <span>— TL: {teamLeaderName}</span>}
+                <span className="truncate">
+                  {agentKey}
+                  {agentTeam && ` · ${agentTeam}`}
+                  {isAdminLike && teamLeaderName && ` — TL: ${teamLeaderName}`}
+                </span>
               </div>
             )}
           </TableCell>
