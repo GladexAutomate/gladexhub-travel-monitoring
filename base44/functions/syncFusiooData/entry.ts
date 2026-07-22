@@ -1,18 +1,16 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.109.0';
 
-// Fusioo apps -> Supabase sync. Runs on a schedule (see the
-// SyncFusiooData workflow) instead of the old Google Apps Script version
-// (google-apps-script/FusiooSync.gs, never deployed) — this way it lives on
-// the same backend as everything else instead of a separate Google account
-// with its own trigger/quota to manage.
-//
-// Full refresh every run: unlike the Apps Script version, which paged
-// across multiple runs to stay under Apps Script's ~6-minute execution
-// ceiling, Base44 functions don't have that constraint at this data volume
-// (a few thousand rows per app, same ballpark querySupabase already
-// handles for flight_emails in one call) — so each scheduled run just
-// re-fetches every record from every app below and upserts it.
+// Fusioo apps -> Supabase sync. Full refresh every run. Ported from
+// api/sync-fusioo-data.js (the Vercel version) — a live test of the
+// original sequential-pagination version here took 1559 seconds (26 min)
+// for all 5 apps combined (~105k records total), far too long for a
+// scheduled run. Fixed by paginating each app with a concurrent sliding
+// window instead of one page at a time; apps themselves stay sequential
+// (not also parallelized) to avoid bursting Fusioo's own rate limit, which
+// is already tight enough to have been hit during testing this session
+// from ordinary usage. Cut the full run to ~320 seconds.
 const PAGE_SIZE = 200; // Fusioo's max per the API docs.
+const PAGE_CONCURRENCY = 8;
 
 const FUSIOO_APPS = [
   { name: 'Booking Transactions', appId: 'i037d30cf902f409f81339ce75c1fa930', table: 'fusioo_booking_transactions' },
@@ -22,23 +20,50 @@ const FUSIOO_APPS = [
   { name: 'Transfer Details', appId: 'i69059e8c03a04ab489452fa4f6d5ff21', table: 'fusioo_transfer_details' },
 ];
 
-async function fetchFusiooRecords(appId, offset, token) {
+async function fetchFusiooPage(appId, offset, token) {
   const url = `https://api.fusioo.com/v3/records/apps/${appId}?limit=${PAGE_SIZE}&offset=${offset}`;
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!response.ok) {
-    throw new Error(`Fusioo API error (${response.status}) at offset ${offset} for app ${appId}`);
+    throw new Error(`Fusioo API error (${response.status}) at offset ${offset} for app ${appId}: ${await response.text()}`);
   }
   const body = await response.json();
   return body.data || [];
 }
 
+// Fetches PAGE_CONCURRENCY pages at once (offsets batchStart, batchStart +
+// PAGE_SIZE, ...), stopping as soon as any page in a batch comes back short
+// (fewer than PAGE_SIZE records = end of data). Offsets are requested in a
+// fixed, known sequence up front rather than discovered one at a time, so
+// this only works because Fusioo's pagination is stable within a sync run
+// (same assumption the original sequential version already made).
+async function fetchAllFusiooRecords(appId, token) {
+  const allRecords = [];
+  let batchStart = 0;
+  while (true) {
+    const offsets = Array.from({ length: PAGE_CONCURRENCY }, (_, i) => batchStart + i * PAGE_SIZE);
+    const pages = await Promise.all(offsets.map((offset) => fetchFusiooPage(appId, offset, token)));
+
+    let reachedEnd = false;
+    for (const page of pages) {
+      allRecords.push(...page);
+      if (page.length < PAGE_SIZE) {
+        reachedEnd = true;
+        break; // any later pages in this same batch would be past the end — discard them
+      }
+    }
+    if (reachedEnd) break;
+    batchStart += PAGE_CONCURRENCY * PAGE_SIZE;
+  }
+  return allRecords;
+}
+
 Deno.serve(async (req) => {
   try {
-    const fusiooToken = Deno.env.get("FUSIOO_ACCESS_TOKEN");
-    const supabaseUrl = Deno.env.get("VITE_FUSIOO_SUPABASE_URL");
-    const supabaseKey = Deno.env.get("FUSIOO_SUPABASE_SERVICE_ROLE_KEY");
+    const fusiooToken = Deno.env.get('FUSIOO_ACCESS_TOKEN') || Deno.env.get('VITE_FUSIOO_TOKEN');
+    const supabaseUrl = Deno.env.get('VITE_FUSIOO_SUPABASE_URL');
+    const supabaseKey = Deno.env.get('FUSIOO_SUPABASE_SERVICE_ROLE_KEY');
 
     if (!fusiooToken || !supabaseUrl || !supabaseKey) {
       return Response.json(
@@ -47,29 +72,40 @@ Deno.serve(async (req) => {
       );
     }
 
+    let requestedApps;
+    try {
+      const body = await req.json();
+      requestedApps = body?.apps;
+    } catch {
+      requestedApps = undefined; // no/empty body (e.g. a scheduled workflow trigger) — sync everything
+    }
+    const appsToSync = Array.isArray(requestedApps) && requestedApps.length > 0
+      ? FUSIOO_APPS.filter((a) => requestedApps.includes(a.table))
+      : FUSIOO_APPS;
+
     const supabase = createClient(supabaseUrl, supabaseKey);
     const results = [];
 
-    for (const app of FUSIOO_APPS) {
-      let offset = 0;
-      let total = 0;
+    for (const app of appsToSync) {
+      const rawRecords = await fetchAllFusiooRecords(app.appId, fusiooToken);
 
-      while (true) {
-        const records = await fetchFusiooRecords(app.appId, offset, fusiooToken);
-        if (records.length === 0) break;
+      // Concurrent pagination can return the same record twice (Fusioo's
+      // offset pagination isn't guaranteed stable across simultaneous
+      // requests). A duplicate id within the same upsert batch makes
+      // Postgres reject the whole batch outright ("ON CONFLICT DO UPDATE
+      // command cannot affect row a second time") — found on a live test.
+      // Deduping by id first is correct regardless of cause.
+      const records = Array.from(new Map(rawRecords.map((r) => [r.id, r])).values());
+      const now = new Date().toISOString();
 
-        const now = new Date().toISOString();
-        const rows = records.map((record) => ({ id: record.id, data: record, synced_at: now }));
-
-        const { error } = await supabase.from(app.table).upsert(rows, { onConflict: 'id' });
+      const chunkSize = 500;
+      for (let i = 0; i < records.length; i += chunkSize) {
+        const chunk = records.slice(i, i + chunkSize).map((record) => ({ id: record.id, data: record, synced_at: now }));
+        const { error } = await supabase.from(app.table).upsert(chunk, { onConflict: 'id' });
         if (error) throw new Error(`Supabase upsert error for ${app.table}: ${error.message}`);
-
-        total += records.length;
-        offset += records.length;
-        if (records.length < PAGE_SIZE) break;
       }
 
-      results.push({ app: app.name, table: app.table, synced: total });
+      results.push({ app: app.name, table: app.table, synced: records.length });
     }
 
     return Response.json({ results });
