@@ -10,15 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { RefreshCw, UserCircle, Search, ChevronUp, ChevronDown, KeyRound, Copy, Check } from "lucide-react";
+import { RefreshCw, UserCircle, Search, ChevronUp, ChevronDown, Eye, EyeOff, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const ROLE_LABELS = {
@@ -59,8 +51,8 @@ export default function EmployeeAccounts() {
   const [roleFilter, setRoleFilter] = useState("all");
   const [sortKey, setSortKey] = useState("employee_code");
   const [sortDir, setSortDir] = useState("asc");
-  const [resetResult, setResetResult] = useState(null); // { account, password }
-  const [copied, setCopied] = useState(false);
+  const [revealedId, setRevealedId]   = useState(null);
+  const [copiedId, setCopiedId]       = useState(null);
 
   const { data: accounts = [], isLoading, isFetching, isError, refetch } = useQuery({
     queryKey: ["synced_employee_list"],
@@ -81,21 +73,13 @@ export default function EmployeeAccounts() {
     },
   });
 
-  const resetPassword = useMutation({
-    mutationFn: async (account) => {
-      try {
-        const response = await invokeApi("resetEmployeePassword", {
-          requesterEmail: user?.email,
-          targetEmail: account.email,
-        });
-        return { account, password: response.data.password };
-      } catch (err) {
-        throw new Error(err.response?.data?.error || err.message);
-      }
-    },
-    onSuccess: (result) => setResetResult(result),
-    onError: (err) => alert(`Failed to reset password: ${err.message}`),
-  });
+  function copyCredentials(account) {
+    const text = `Employee Code: ${account.employee_code}\nPassword: ${account.password}`;
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedId(account.id);
+      setTimeout(() => setCopiedId(null), 2000);
+    });
+  }
 
   // Writes to role_override/is_active_override (not the synced role/
   // is_active) — see updateEmployeeAccount/entry.ts and the fields'
@@ -156,15 +140,6 @@ export default function EmployeeAccounts() {
       setSortKey(key);
       setSortDir("asc");
     }
-  }
-
-  function copyCredentials() {
-    if (!resetResult) return;
-    const text = `Employee Code: ${resetResult.account.employee_code}\nPassword: ${resetResult.password}`;
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
   }
 
   if (user?.role !== "super_admin") {
@@ -246,6 +221,7 @@ export default function EmployeeAccounts() {
                     <TableHead>Department</TableHead>
                     <SortableHead sortField="role" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort}>Role</SortableHead>
                     <SortableHead sortField="is_active" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort}>Status</SortableHead>
+                    <TableHead>Credentials</TableHead>
                     <TableHead className="text-right">Action</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -272,9 +248,10 @@ export default function EmployeeAccounts() {
                     </TableRow>
                   )}
                   {!isLoading && !isError && filtered.map((account) => {
-                    const isResetting = resetPassword.isPending && resetPassword.variables?.id === account.id;
                     const isUpdating = updateAccount.isPending && updateAccount.variables?.account.id === account.id;
                     const isSelf = account.email && account.email === user?.email;
+                    const revealed = revealedId === account.id;
+                    const justCopied = copiedId === account.id;
                     return (
                       <TableRow key={account.id}>
                         <TableCell className="font-medium">{account.full_name || "—"}</TableCell>
@@ -303,30 +280,35 @@ export default function EmployeeAccounts() {
                             <Badge className="bg-muted text-muted-foreground border border-border">Inactive</Badge>
                           )}
                         </TableCell>
+                        <TableCell>
+                          {account.password ? (
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono text-xs">
+                                {revealed ? account.password : "••••••••"}
+                              </span>
+                              <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => setRevealedId(revealed ? null : account.id)}>
+                                {revealed ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                              </Button>
+                              <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => copyCredentials(account)}>
+                                {justCopied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                              </Button>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-right">
-                          <div className="flex justify-end gap-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="gap-1.5"
-                              disabled={isResetting}
-                              onClick={() => resetPassword.mutate(account)}
-                            >
-                              <KeyRound className={cn("w-3.5 h-3.5", isResetting && "animate-pulse")} />
-                              Reset Password
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant={account.is_active ? "outline" : "default"}
-                              disabled={isSelf || isUpdating}
-                              title={isSelf ? "Can't deactivate your own account here." : undefined}
-                              onClick={() =>
-                                updateAccount.mutate({ account, patch: { is_active: !account.is_active } })
-                              }
-                            >
-                              {account.is_active ? "Deactivate" : "Activate"}
-                            </Button>
-                          </div>
+                          <Button
+                            size="sm"
+                            variant={account.is_active ? "outline" : "default"}
+                            disabled={isSelf || isUpdating}
+                            title={isSelf ? "Can't deactivate your own account here." : undefined}
+                            onClick={() =>
+                              updateAccount.mutate({ account, patch: { is_active: !account.is_active } })
+                            }
+                          >
+                            {account.is_active ? "Deactivate" : "Activate"}
+                          </Button>
                         </TableCell>
                       </TableRow>
                     );
@@ -338,28 +320,6 @@ export default function EmployeeAccounts() {
         </main>
       </div>
 
-      {/* Shown exactly once, right after a reset — the new password can't be
-          retrieved again after this dialog closes (only re-reset). */}
-      <Dialog open={!!resetResult} onOpenChange={(open) => !open && setResetResult(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Password reset</DialogTitle>
-            <DialogDescription>
-              New password for {resetResult?.account.full_name} ({resetResult?.account.employee_code}). Copy and
-              share it now — it won't be shown again.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-muted font-mono text-lg tracking-wider justify-center">
-            {resetResult?.password}
-          </div>
-          <DialogFooter>
-            <Button onClick={copyCredentials} className="gap-2">
-              {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-              {copied ? "Copied!" : "Copy code + password"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

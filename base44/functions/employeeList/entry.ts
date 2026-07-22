@@ -100,7 +100,13 @@ Deno.serve(async (req) => {
         is_active,
       };
       return isAdminLike
-        ? { ...base, email, employee_code: (source && source.employee_code) || '', department: (source && source.job_title) || '' }
+        ? {
+            ...base,
+            email,
+            employee_code: (source && source.employee_code) || '',
+            department:    (source && source.job_title) || '',
+            password:      (source && source.generated_password) || '',
+          }
         : base;
     });
 
