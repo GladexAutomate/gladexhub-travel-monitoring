@@ -215,65 +215,80 @@ function runSync_(afterDate, maxThreadsPerAirline) {
     const query = buildQuery_(airline, afterDate);
     let saved = 0, duplicates = 0, needsReview = 0, networkErrors = 0, threadsSeen = 0;
 
-    while (threadsSeen < maxThreadsPerAirline) {
-      if (Date.now() - startTime > CONFIG.MAX_RUNTIME_MS) {
-        stoppedEarly = true;
-        break;
-      }
-
-      // Always search from the top: threads get labeled (Processed/NeedsReview)
-      // as they're handled below, which drops them out of this query's results —
-      // so position 0 always holds the next not-yet-handled batch. Paginating
-      // with an incrementing offset here would skip threads, since the result
-      // set shrinks out from under a fixed offset as labels get applied.
-      const batchSize = Math.min(CONFIG.PAGE_SIZE, maxThreadsPerAirline - threadsSeen);
-      const batch = GmailApp.search(query, 0, batchSize);
-      if (batch.length === 0) break;
-
-      batch.forEach(function (thread) {
-        // Everything about this thread (fetching its messages, labeling it
-        // afterward) is wrapped in one try/catch — Array.forEach does NOT
-        // catch exceptions from its callback, it propagates them straight
-        // out through the enclosing while loop and the AIRLINES.forEach
-        // above it, aborting the ENTIRE run (every remaining thread, every
-        // remaining airline, and the checkForUnknownAirlineSenders_ safety
-        // net that runs after this loop — since it never gets called if an
-        // exception already unwound out of runSync_). A single
-        // temporarily-inaccessible thread must not be able to silently take
-        // down the whole sync run this way — leave it unlabeled (retried
-        // next run, same as a network_error) and keep going.
-        try {
-          const messages = thread.getMessages();
-          let threadHasNetworkError = false;
-          let threadHasParseError = false;
-
-          messages.forEach(function (message) {
-            let result;
-            try {
-              result = processMessage_(message, airline, supabaseUrl, supabaseKey);
-            } catch (err) {
-              Logger.log('UNEXPECTED ERROR on message ' + message.getId() + ': ' + err);
-              result = 'network_error';
-            }
-
-            if (result === 'success') saved++;
-            else if (result === 'duplicate') duplicates++;
-            else if (result === 'parse_error') { needsReview++; threadHasParseError = true; }
-            else if (result === 'network_error') { networkErrors++; threadHasNetworkError = true; }
-          });
-
-          // A network error means Supabase may not have received the data yet, so
-          // leave the whole thread unlabeled and let the next run retry it.
-          if (threadHasNetworkError) return;
-          thread.addLabel(threadHasParseError ? needsReviewLabel : processedLabel);
-        } catch (err) {
-          Logger.log('UNEXPECTED ERROR on thread ' + thread.getId() + ' (left unlabeled, will retry next run): ' + err);
-          networkErrors++;
+    // The whole per-airline loop (including GmailApp.search itself) is
+    // wrapped in one try/catch — unlike every operation inside it, the
+    // search call below previously had no isolation of its own. A transient
+    // GmailApp hiccup while searching for, say, Cebu Pacific would otherwise
+    // propagate straight out of AIRLINES.forEach and abort runSync_ entirely:
+    // every airline listed after it goes unscanned THIS RUN, and
+    // checkForUnknownAirlineSenders_/recordHeartbeat_ below never run either
+    // — silent, run-after-run starvation with no error surfaced beyond the
+    // generic heartbeat alert. One bad airline must not be able to take the
+    // rest of the run down with it, same reasoning as the thread/message
+    // isolation below.
+    try {
+      while (threadsSeen < maxThreadsPerAirline) {
+        if (Date.now() - startTime > CONFIG.MAX_RUNTIME_MS) {
+          stoppedEarly = true;
+          break;
         }
-      });
 
-      threadsSeen += batch.length;
-      if (batch.length < batchSize) break; // last page
+        // Always search from the top: threads get labeled (Processed/NeedsReview)
+        // as they're handled below, which drops them out of this query's results —
+        // so position 0 always holds the next not-yet-handled batch. Paginating
+        // with an incrementing offset here would skip threads, since the result
+        // set shrinks out from under a fixed offset as labels get applied.
+        const batchSize = Math.min(CONFIG.PAGE_SIZE, maxThreadsPerAirline - threadsSeen);
+        const batch = GmailApp.search(query, 0, batchSize);
+        if (batch.length === 0) break;
+
+        batch.forEach(function (thread) {
+          // Everything about this thread (fetching its messages, labeling it
+          // afterward) is wrapped in one try/catch — Array.forEach does NOT
+          // catch exceptions from its callback, it propagates them straight
+          // out through the enclosing while loop and the AIRLINES.forEach
+          // above it, aborting the ENTIRE run (every remaining thread, every
+          // remaining airline, and the checkForUnknownAirlineSenders_ safety
+          // net that runs after this loop — since it never gets called if an
+          // exception already unwound out of runSync_). A single
+          // temporarily-inaccessible thread must not be able to silently take
+          // down the whole sync run this way — leave it unlabeled (retried
+          // next run, same as a network_error) and keep going.
+          try {
+            const messages = thread.getMessages();
+            let threadHasNetworkError = false;
+            let threadHasParseError = false;
+
+            messages.forEach(function (message) {
+              let result;
+              try {
+                result = processMessage_(message, airline, supabaseUrl, supabaseKey);
+              } catch (err) {
+                Logger.log('UNEXPECTED ERROR on message ' + message.getId() + ': ' + err);
+                result = 'network_error';
+              }
+
+              if (result === 'success') saved++;
+              else if (result === 'duplicate') duplicates++;
+              else if (result === 'parse_error') { needsReview++; threadHasParseError = true; }
+              else if (result === 'network_error') { networkErrors++; threadHasNetworkError = true; }
+            });
+
+            // A network error means Supabase may not have received the data yet, so
+            // leave the whole thread unlabeled and let the next run retry it.
+            if (threadHasNetworkError) return;
+            thread.addLabel(threadHasParseError ? needsReviewLabel : processedLabel);
+          } catch (err) {
+            Logger.log('UNEXPECTED ERROR on thread ' + thread.getId() + ' (left unlabeled, will retry next run): ' + err);
+            networkErrors++;
+          }
+        });
+
+        threadsSeen += batch.length;
+        if (batch.length < batchSize) break; // last page
+      }
+    } catch (err) {
+      Logger.log('UNEXPECTED ERROR syncing ' + airline.name + ' (will retry next run, remaining airlines still scanned): ' + err);
     }
 
     Logger.log(
@@ -703,6 +718,16 @@ function processMessage_(message, airline, supabaseUrl, supabaseKey) {
   const emailType = airline.detectEmailType(subject, body);
   if (!emailType) {
     Logger.log('SKIP (unrecognized email type): "' + subject + '" [' + gmailMessageId + ']');
+    // Unlike a parse failure on an email ALREADY classified as reschedule/
+    // cancellation (below), we have no idea what this one actually is — it
+    // could be a real cancellation using wording detectEmailType doesn't
+    // recognize yet. The "confirmations are excluded to avoid noise" logic
+    // below doesn't apply here since we never even got that far; can't
+    // afford to let this vanish with only a Gmail label, so it always gets
+    // a dashboard trace regardless of what it might be.
+    if (supabaseUrl && supabaseKey) {
+      saveNeedsAttentionRow_(message, airline.name + ' (unclassified)', supabaseUrl, supabaseKey);
+    }
     return 'parse_error';
   }
 
@@ -1407,10 +1432,22 @@ function saveToSupabase_(record, supabaseUrl, supabaseKey) {
     headers: {
       apikey: supabaseKey,
       Authorization: 'Bearer ' + supabaseKey,
-      // ignore-duplicates -> ON CONFLICT DO NOTHING on gmail_message_id, no error thrown.
-      // return=representation -> lets us tell "inserted" (rows.length > 0) apart from
-      // "duplicate, ignored" (rows.length === 0) using the same response.
-      Prefer: 'resolution=ignore-duplicates,return=representation',
+      // merge-duplicates -> ON CONFLICT DO UPDATE on gmail_message_id. Needed
+      // so resetNeedsReviewEmails()'s documented recovery path actually
+      // works: a needs_attention placeholder saved because a parser
+      // couldn't handle an email, followed by a parser fix and a reprocess,
+      // must overwrite that placeholder with the real corrected data — with
+      // ignore-duplicates (ON CONFLICT DO NOTHING) the corrected row was
+      // silently discarded as a "duplicate" and the placeholder stuck
+      // around forever. Safe for the ordinary re-scan case too: the same
+      // gmail_message_id always re-derives identical data from the same
+      // immutable email unless the parser itself changed, so this is a
+      // no-op overwrite in the common case and a real fix in the recovery
+      // case.
+      // return=representation -> lets us tell "inserted" apart from
+      // "updated" (both come back as rows.length > 0 now; the log below
+      // just calls both cases 'success').
+      Prefer: 'resolution=merge-duplicates,return=representation',
       // Apps Script's default UrlFetchApp User-Agent starts with "Mozilla/5.0",
       // which trips Supabase's secret-key browser-use protection (it rejects
       // secret keys on requests that look like they came from a browser).
