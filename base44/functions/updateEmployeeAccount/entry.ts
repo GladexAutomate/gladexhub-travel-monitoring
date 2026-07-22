@@ -64,6 +64,21 @@ Deno.serve(async (req) => {
       return Response.json({ error: 'Nothing to update' }, { status: 400 });
     }
 
+    // A brand-new pre-assignment (no admin_accounts row for this email yet)
+    // would otherwise leave session_token null forever until that person's
+    // first real login, letting anyone who knows the email act as that role
+    // with zero authentication in the meantime. Seeding a random token here
+    // closes it without affecting the real employee's own eventual login,
+    // which always overwrites session_token with its own fresh value.
+    const { data: existingTarget } = await supabase
+      .from('admin_accounts')
+      .select('email')
+      .eq('email', targetEmailLower)
+      .limit(1);
+    if (!existingTarget?.length) {
+      patch.session_token = crypto.randomUUID();
+    }
+
     const { error: upsertError } = await supabase.from('admin_accounts').upsert(patch, { onConflict: 'email' });
     if (upsertError) throw upsertError;
 

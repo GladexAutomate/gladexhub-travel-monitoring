@@ -70,6 +70,27 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Nothing to update' });
     }
 
+    // A brand-new pre-assignment (no admin_accounts row for this email yet)
+    // would otherwise leave session_token null forever until that person's
+    // first real login — and the null-token check above intentionally lets
+    // null-token requests through (so accounts predating the session-token
+    // feature aren't force-logged-out). That's fine for an existing account
+    // someone already logged into, but for a row created by THIS insert,
+    // null just means "anyone who knows this email can act as this role
+    // right now, no login required" — a real gap, worse the higher the role
+    // (e.g. pre-assigning super_admin). Seeding a random token here closes
+    // it without affecting the real employee's own eventual login, which
+    // always overwrites session_token with its own fresh value regardless
+    // of what's currently there.
+    const { data: existingTarget } = await supabase
+      .from('admin_accounts')
+      .select('email')
+      .eq('email', targetEmailLower)
+      .limit(1);
+    if (!existingTarget?.length) {
+      patch.session_token = crypto.randomUUID();
+    }
+
     const { error: upsertError } = await supabase.from('admin_accounts').upsert(patch, { onConflict: 'email' });
     if (upsertError) throw upsertError;
 
