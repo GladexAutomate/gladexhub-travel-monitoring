@@ -72,13 +72,28 @@ Deno.serve(async (req) => {
       );
     }
 
-    let requestedApps;
+    let body;
     try {
-      const body = await req.json();
-      requestedApps = body?.apps;
+      body = await req.json();
     } catch {
-      requestedApps = undefined; // no/empty body (e.g. a scheduled workflow trigger) — sync everything
+      body = {}; // no/empty body (e.g. a scheduled workflow trigger) — sync everything
     }
+
+    // Shared-secret gate: only the scheduled Fusioo Data Sync workflow (or a
+    // manual test that knows the secret) may trigger this expensive full
+    // re-sync. A scheduled workflow has no logged-in user, so auth.me()/role
+    // checks don't apply here — a shared secret is the platform-recommended
+    // guard for no-user endpoints. Compare the caller's body.sync_secret
+    // against FUSIOO_SYNC_SECRET (set in Environment Variables); reject if
+    // the env var is unset OR the caller's value is missing OR they differ —
+    // the both-empty check prevents undefined === undefined from passing.
+    const expectedSecret = Deno.env.get('FUSIOO_SYNC_SECRET');
+    const providedSecret = body?.sync_secret;
+    if (!expectedSecret || !providedSecret || expectedSecret !== providedSecret) {
+      return Response.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    const requestedApps = body?.apps;
     const appsToSync = Array.isArray(requestedApps) && requestedApps.length > 0
       ? FUSIOO_APPS.filter((a) => requestedApps.includes(a.table))
       : FUSIOO_APPS;
