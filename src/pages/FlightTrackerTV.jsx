@@ -5,6 +5,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { Plane, CheckCircle2, RotateCcw, XCircle, AlertTriangle, Volume2 } from "lucide-react";
 import { format, formatDistanceToNowStrict } from "date-fns";
 import { cn } from "@/lib/utils";
+import { fetchGdxByBookingRef } from "@/lib/fusioo-lookup";
+import { todayDateKey, getPrimaryDepartureDate, getPrimaryArrivalDate, isUnregistered } from "@/lib/flight-email-helpers";
 
 // Meant to be left open indefinitely on a wall-mounted TV/monitor with no
 // mouse/keyboard — someone logs in once via the normal Flight Tracker login
@@ -127,6 +129,23 @@ export default function FlightTrackerTV() {
     refetchInterval: REFRESH_MS,
   });
 
+  // Shared with AdminFlightManagement.jsx (src/lib/fusioo-lookup.js) so the
+  // TV screen's "Unregistered Flights" stat means exactly the same thing as
+  // the admin dashboard's — this page previously had no GDX lookup at all,
+  // which is why its stats drifted to a completely different set (plain
+  // Confirmations/Reschedules/Cancellations/Needs Attention counts) instead
+  // of matching the dashboard's Flight Updates/Arrivals/Departures/
+  // Unregistered breakdown.
+  const bookingRefs = useMemo(
+    () => Array.from(new Set(records.map((r) => r.booking_ref).filter(Boolean))),
+    [records]
+  );
+  const { data: gdxByBookingRef = {} } = useQuery({
+    queryKey: ["flight_emails_tv_gdx_lookup_fusioo", bookingRefs],
+    enabled: bookingRefs.length > 0 && !!user?.email,
+    queryFn: () => fetchGdxByBookingRef(bookingRefs, user?.email),
+  });
+
   const feed = useMemo(() => records.slice(0, FEED_LIMIT), [records]);
 
   // Diff against the previous poll to find genuinely new rows, flash them,
@@ -166,15 +185,15 @@ export default function FlightTrackerTV() {
     seenIdsRef.current = currentIds;
   }, [records, soundEnabled]);
 
+  const todayKey = useMemo(() => todayDateKey(), []);
   const stats = useMemo(
     () => ({
-      total: records.length,
-      confirmation: records.filter((r) => r.email_type === "confirmation").length,
-      reschedule: records.filter((r) => r.email_type === "reschedule").length,
-      cancellation: records.filter((r) => r.email_type === "cancellation").length,
-      needs_attention: records.filter((r) => r.email_type === "needs_attention").length,
+      updates: records.filter((r) => r.email_type === "reschedule" || r.email_type === "cancellation").length,
+      arrivals: records.filter((r) => getPrimaryArrivalDate(r) === todayKey).length,
+      departures: records.filter((r) => getPrimaryDepartureDate(r) === todayKey).length,
+      unregistered: records.filter((r) => isUnregistered(r, gdxByBookingRef)).length,
     }),
-    [records]
+    [records, todayKey, gdxByBookingRef]
   );
 
   // One tap does both — sound and fullscreen both require a real user
@@ -238,12 +257,11 @@ export default function FlightTrackerTV() {
         </div>
       )}
 
-      <div className="grid grid-cols-5 gap-4">
-        <TvStat label="Total" value={stats.total} className="text-slate-100" />
-        <TvStat label="Confirmations" value={stats.confirmation} className="text-emerald-400" />
-        <TvStat label="Reschedules" value={stats.reschedule} className="text-orange-400" />
-        <TvStat label="Cancellations" value={stats.cancellation} className="text-red-400" />
-        <TvStat label="Needs Attention" value={stats.needs_attention} className="text-amber-400" />
+      <div className="grid grid-cols-4 gap-4">
+        <TvStat label="Flight Updates" value={stats.updates} className="text-orange-400" />
+        <TvStat label="Arrivals Today" value={stats.arrivals} className="text-purple-400" />
+        <TvStat label="Departures Today" value={stats.departures} className="text-blue-400" />
+        <TvStat label="Unregistered Flights" value={stats.unregistered} className="text-amber-400" />
       </div>
 
       <div className="flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">

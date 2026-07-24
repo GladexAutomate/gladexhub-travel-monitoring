@@ -28,9 +28,12 @@ import {
   PlaneTakeoff,
   PlaneLanding,
   AlertTriangle,
+  ExternalLink,
 } from "lucide-react";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
+import { fetchGdxByBookingRef } from "@/lib/fusioo-lookup";
+import { dateKeyOffset, todayDateKey, getPrimaryDepartureDate, getPrimaryArrivalDate, isUnregistered as isUnregisteredRecord } from "@/lib/flight-email-helpers";
 
 const ROLE_LABELS = {
   agent: "Agent",
@@ -103,39 +106,6 @@ function invokeError(err) {
   return new Error(err.response?.data?.error || err.message);
 }
 
-async function selectFusiooByJsonbField(table, field, values, requesterEmail) {
-  if (!values || values.length === 0) return [];
-  try {
-    const response = await invokeApi('querySupabase', {
-      project: 'fusioo',
-      table,
-      operation: 'filterJsonbIn',
-      jsonbField: field,
-      values,
-      requesterEmail,
-    });
-    return (response.data.rows || []).map((row) => row.data);
-  } catch (err) {
-    throw invokeError(err);
-  }
-}
-
-async function selectFusiooByIds(table, ids, requesterEmail) {
-  if (!ids || ids.length === 0) return [];
-  try {
-    const response = await invokeApi('querySupabase', {
-      project: 'fusioo',
-      table,
-      operation: 'filterIdIn',
-      ids,
-      requesterEmail,
-    });
-    return (response.data.rows || []).map((row) => row.data);
-  } catch (err) {
-    throw invokeError(err);
-  }
-}
-
 // Computes the agent->primary-team mapping entirely server-side — the
 // aggregate itself (not the underlying per-client PII) is all this page
 // needs, and the backend never has to hand back the raw company-wide
@@ -152,18 +122,6 @@ async function fetchAgentPrimaryTeamMap(requesterEmail) {
   } catch (err) {
     throw invokeError(err);
   }
-}
-
-// departure_date is stored as a plain "YYYY-MM-DD" string, so plain string
-// comparison sorts/buckets correctly without any Date-object timezone
-// pitfalls (parsing a date-only string as UTC and comparing against a local
-// "today" can shift the calendar day depending on the browser's timezone).
-function getPrimaryDepartureDate(record) {
-  return record.flights?.[0]?.departure_date || null;
-}
-
-function getPrimaryArrivalDate(record) {
-  return record.flights?.[0]?.arrival_date || null;
 }
 
 // received_date is a full timestamp (not a plain date string like
@@ -185,19 +143,6 @@ function getReceivedDateKey(record) {
 // upcoming and archive views. Filtered here (not deleted from Supabase) so
 // the data isn't destroyed, just hidden from day-to-day use.
 const MIN_DEPARTURE_DATE = "2026-01-01";
-
-function dateKeyOffset(days) {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function todayDateKey() {
-  return dateKeyOffset(0);
-}
 
 function yesterdayDateKey() {
   return dateKeyOffset(-1);
@@ -301,73 +246,14 @@ export default function AdminFlightManagement() {
     [records]
   );
 
+  // Shared with FlightTrackerTV.jsx (src/lib/fusioo-lookup.js) so both pages
+  // resolve GDX/client/agent the exact same way — this is the logic the TV
+  // screen was previously missing entirely, which is why it never had an
+  // "Unregistered Flights" concept to begin with.
   const { data: gdxByBookingRef = {} } = useQuery({
     queryKey: ["flight_emails_gdx_lookup_fusioo", bookingRefs],
     enabled: bookingRefs.length > 0 && !!user?.email,
-    queryFn: async () => {
-      const tickets = await selectFusiooByJsonbField(
-        "fusioo_ticket_details",
-        "booking_reference_number_pnr",
-        bookingRefs,
-        user?.email
-      );
-
-      // booking_transactions on a Fusioo ticket is an array of Fusioo record
-      // ids (usually just one) pointing straight at fusioo_booking_transactions.id
-      // — a real, always-consistent link (unlike the old Sales table's mixed
-      // record_id/gdx-number format), so no format-sniffing needed here.
-      const bookingIds = Array.from(
-        new Set(tickets.flatMap((t) => t.booking_transactions || []))
-      );
-
-      // agent_name/name_of_agent are the same "Team Name"/"Agent Name" fields
-      // shown on Fusioo's Booking Transactions app — used for RBAC filtering
-      // (team_leader sees their team's bookings, agent sees only their own).
-      // Both are stored as single-element arrays on the Fusioo record.
-      const bookingRows = await selectFusiooByIds("fusioo_booking_transactions", bookingIds, user?.email);
-      const bookingsById = Object.fromEntries(bookingRows.map((b) => [b.id, b]));
-
-      const lookup = {};
-      tickets.forEach((t) => {
-        const bookingId = (t.booking_transactions || [])[0] || null;
-        const booking = bookingId ? bookingsById[bookingId] : null;
-        const candidate = {
-          gdx: booking?.gdx ?? null,
-          clientName: booking?.lead_name || t.customer_last_name || null,
-          mobile: booking?.mobile_1 || null,
-          email: booking?.email_1 || null,
-          teamName: (booking?.agent_name || [])[0] || null,
-          agentName: (booking?.name_of_agent || [])[0] || null,
-        };
-        const existing = lookup[t.booking_reference_number_pnr];
-        // More than one ticket row can share the same PNR (duplicate
-        // entries, or a row whose booking_transactions link is missing/
-        // malformed). Keep whichever one actually resolves to a GDX instead
-        // of letting a later blank row silently overwrite a working match.
-        if (!existing || (!existing.gdx && candidate.gdx)) {
-          lookup[t.booking_reference_number_pnr] = candidate;
-        }
-      });
-
-      // booking_refs with no ticket row at all never enter the loop above,
-      // so they'd otherwise be missing from the lookup entirely. Fill those
-      // in explicitly so they still render as "—" instead of being skipped.
-      const ticketedRefs = new Set(tickets.map((t) => t.booking_reference_number_pnr));
-      bookingRefs.forEach((ref) => {
-        if (!ticketedRefs.has(ref) && !lookup[ref]) {
-          lookup[ref] = {
-            gdx: null,
-            clientName: null,
-            mobile: null,
-            email: null,
-            teamName: null,
-            agentName: null,
-          };
-        }
-      });
-
-      return lookup;
-    },
+    queryFn: () => fetchGdxByBookingRef(bookingRefs, user?.email),
   });
 
   const airlines = useMemo(
@@ -448,15 +334,9 @@ export default function AdminFlightManagement() {
   const todayKey = useMemo(() => todayDateKey(), []);
   const yesterdayKey = useMemo(() => yesterdayDateKey(), []);
 
-  // No GDX resolved for this booking_ref — either it matched a real Fusioo
-  // ticket with no linked GDX booking, or it's a genuine PNR Fusioo doesn't
-  // have on file. needs_attention rows are explicitly excluded: their
-  // booking_ref is a raw email subject line (see saveNeedsAttentionRow_ in
-  // Code.gs), never a real airline PNR, so they can NEVER resolve to a GDX —
-  // counting them here isn't "no agent assigned yet", it's just "this email
-  // couldn't be parsed/classified", a different problem that inflated this
-  // tab to 20,000+ rows before this fix.
-  const isUnregistered = (r) => r.email_type !== "needs_attention" && !gdxByBookingRef[r.booking_ref]?.gdx;
+  // See isUnregistered in flight-email-helpers.js — shared with
+  // FlightTrackerTV.jsx so both pages agree on what counts as unregistered.
+  const isUnregistered = (r) => isUnregisteredRecord(r, gdxByBookingRef);
 
   function matchesView(r, tab) {
     if (tab === "updates") return r.email_type === "reschedule" || r.email_type === "cancellation";
@@ -1141,9 +1021,21 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
                   </div>
                 ))}
               </div>
-              <p className="text-[11px] text-muted-foreground mt-3">
-                Gmail message ID: <span className="font-mono">{r.gmail_message_id}</span>
-              </p>
+              <div className="flex items-center gap-3 mt-3">
+                <p className="text-[11px] text-muted-foreground">
+                  Gmail message ID: <span className="font-mono">{r.gmail_message_id}</span>
+                </p>
+                {r.gmail_message_id && (
+                  <a
+                    href={`https://mail.google.com/mail/u/0/#all/${r.gmail_message_id}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-orange-600 hover:underline"
+                  >
+                    <ExternalLink className="w-3 h-3" /> Open in Gmail
+                  </a>
+                )}
+              </div>
             </TableCell>
           </TableRow>
         )}

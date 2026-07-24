@@ -1,11 +1,15 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.109.0';
 
-// super_admin-only: sets role_override and/or is_active_override on
+// super_admin/admin: sets role_override and/or is_active_override on
 // admin_accounts, keyed by email now (no single entity id spans both the
 // local table and the live source). Upserts rather than requiring the row
 // to already exist — an admin can pre-assign a role to a real employee who
-// hasn't logged in yet. Ported verbatim from api/update-employee-account.js.
+// hasn't logged in yet. Ported verbatim from api/update-employee-account.js
+// — a plain 'admin' may manage agent/team_leader/admin accounts, but not hr
+// or super_admin ones (checked on both the target's current role and the
+// role being assigned).
 const VALID_ROLES = ['agent', 'team_leader', 'hr', 'admin', 'super_admin'];
+const RESTRICTED_ROLES_FOR_ADMIN = ['hr', 'super_admin'];
 
 Deno.serve(async (req) => {
   try {
@@ -53,9 +57,10 @@ Deno.serve(async (req) => {
     if (!requesterActive) {
       return Response.json({ error: 'Account deactivated' }, { status: 403 });
     }
-    if (requesterRole !== 'super_admin') {
+    if (requesterRole !== 'super_admin' && requesterRole !== 'admin') {
       return Response.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
+    const requesterIsPlainAdmin = requesterRole === 'admin';
 
     if (requesterEmailLower === targetEmailLower) {
       return Response.json({ error: "Can't change your own role or status here." }, { status: 400 });
@@ -63,6 +68,9 @@ Deno.serve(async (req) => {
 
     if (role !== undefined && !VALID_ROLES.includes(role)) {
       return Response.json({ error: `Invalid role: ${role}` }, { status: 400 });
+    }
+    if (requesterIsPlainAdmin && role !== undefined && RESTRICTED_ROLES_FOR_ADMIN.includes(role)) {
+      return Response.json({ error: 'Only a Super Admin can assign the HR or Super Admin role.' }, { status: 403 });
     }
 
     const patch = { email: targetEmailLower };
@@ -80,11 +88,19 @@ Deno.serve(async (req) => {
     // which always overwrites session_token with its own fresh value.
     const { data: existingTarget } = await supabase
       .from('admin_accounts')
-      .select('email')
+      .select('email,role,role_override')
       .eq('email', targetEmailLower)
       .limit(1);
     if (!existingTarget?.length) {
       patch.session_token = crypto.randomUUID();
+    }
+
+    if (requesterIsPlainAdmin) {
+      const targetRow = existingTarget?.[0];
+      const targetCurrentRole = (targetRow && (targetRow.role_override || targetRow.role)) || 'agent';
+      if (RESTRICTED_ROLES_FOR_ADMIN.includes(targetCurrentRole)) {
+        return Response.json({ error: 'Only a Super Admin can modify an HR or Super Admin account.' }, { status: 403 });
+      }
     }
 
     const { error: upsertError } = await supabase.from('admin_accounts').upsert(patch, { onConflict: 'email' });

@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invokeApi } from "@/lib/vercelApi";
-import { useAuth } from "@/hooks/useAuth";
+import { useAuth, ADMIN_LIKE_ROLES } from "@/hooks/useAuth";
 import FlightTrackerSidebar from "@/components/FlightTrackerSidebar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -22,6 +22,12 @@ const ROLE_LABELS = {
 };
 
 const ROLE_FILTERS = ["all", "agent", "team_leader", "hr", "admin", "super_admin"];
+
+// A plain 'admin' can manage Agent/Team Leader/Admin accounts, but not HR or
+// Super Admin ones — mirrors the same restriction enforced server-side in
+// api/update-employee-account.js, so the UI doesn't offer an action the
+// backend would reject anyway.
+const RESTRICTED_ROLES_FOR_ADMIN = ["hr", "super_admin"];
 const STATUS_FILTERS = ["all", "active", "inactive"];
 
 // Hoisted above the component so it isn't recreated (and remounted by
@@ -52,9 +58,12 @@ export default function EmployeeAccounts() {
   const [sortKey, setSortKey] = useState("employee_code");
   const [sortDir, setSortDir] = useState("asc");
 
+  const isSuperAdmin = user?.role === "super_admin";
+  const isAdminLike = user && ADMIN_LIKE_ROLES.includes(user.role);
+
   const { data: accounts = [], isLoading, isFetching, isError, refetch } = useQuery({
     queryKey: ["synced_employee_list"],
-    enabled: user?.role === "super_admin" && !!user?.email,
+    enabled: isAdminLike && !!user?.email,
     queryFn: async () => {
       // invokeApi() rejects on any non-2xx response rather than resolving
       // with the error in response.data, so the real message ("Insufficient
@@ -132,7 +141,7 @@ export default function EmployeeAccounts() {
     }
   }
 
-  if (user?.role !== "super_admin") {
+  if (!isAdminLike) {
     return <Navigate to="/admin/flight-tracker" replace />;
   }
 
@@ -239,6 +248,16 @@ export default function EmployeeAccounts() {
                   {!isLoading && !isError && filtered.map((account) => {
                     const isUpdating = updateAccount.isPending && updateAccount.variables?.account.id === account.id;
                     const isSelf = account.email && account.email === user?.email;
+                    // A plain admin can't touch an HR/Super Admin account at
+                    // all (not just role-change — activate/deactivate too).
+                    const isRestrictedTarget = !isSuperAdmin && RESTRICTED_ROLES_FOR_ADMIN.includes(account.role);
+                    const restrictedTitle = isRestrictedTarget ? "Only a Super Admin can modify HR or Super Admin accounts." : undefined;
+                    // Same restriction on the ROLE OPTIONS themselves — an
+                    // admin can't promote someone INTO hr/super_admin either,
+                    // even on an account they're otherwise allowed to edit.
+                    const roleEntries = isSuperAdmin
+                      ? Object.entries(ROLE_LABELS)
+                      : Object.entries(ROLE_LABELS).filter(([value]) => !RESTRICTED_ROLES_FOR_ADMIN.includes(value));
                     return (
                       <TableRow key={account.id}>
                         <TableCell className="font-medium">{account.full_name || "—"}</TableCell>
@@ -247,14 +266,14 @@ export default function EmployeeAccounts() {
                         <TableCell>
                           <Select
                             value={account.role || ""}
-                            disabled={isSelf || isUpdating}
+                            disabled={isSelf || isUpdating || isRestrictedTarget}
                             onValueChange={(role) => updateAccount.mutate({ account, patch: { role } })}
                           >
-                            <SelectTrigger className="w-36 h-8 text-xs">
+                            <SelectTrigger className="w-36 h-8 text-xs" title={restrictedTitle}>
                               <SelectValue placeholder="—" />
                             </SelectTrigger>
                             <SelectContent>
-                              {Object.entries(ROLE_LABELS).map(([value, label]) => (
+                              {roleEntries.map(([value, label]) => (
                                 <SelectItem key={value} value={value}>{label}</SelectItem>
                               ))}
                             </SelectContent>
@@ -271,8 +290,8 @@ export default function EmployeeAccounts() {
                           <Button
                             size="sm"
                             variant={account.is_active ? "outline" : "default"}
-                            disabled={isSelf || isUpdating}
-                            title={isSelf ? "Can't deactivate your own account here." : undefined}
+                            disabled={isSelf || isUpdating || isRestrictedTarget}
+                            title={isSelf ? "Can't deactivate your own account here." : restrictedTitle}
                             onClick={() =>
                               updateAccount.mutate({ account, patch: { is_active: !account.is_active } })
                             }

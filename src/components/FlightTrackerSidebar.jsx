@@ -16,7 +16,7 @@ export default function FlightTrackerSidebar({ active }) {
     navigate("/admin/flight-tracker-login", { replace: true });
   };
 
-  const items = NAV_ITEMS.filter((item) => !item.developerOnly || user?.role === "super_admin");
+  const items = NAV_ITEMS.filter((item) => !item.developerOnly || isAdminLike);
 
   return (
     <aside className="hidden md:flex flex-col w-64 h-screen sticky top-0 shrink-0 bg-sidebar border-r border-sidebar-border">

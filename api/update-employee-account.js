@@ -1,13 +1,22 @@
 import { createClient } from '@supabase/supabase-js';
 
-// super_admin-only: sets role_override and/or is_active_override on
+// super_admin/admin: sets role_override and/or is_active_override on
 // admin_accounts, keyed by email now (no single entity id spans both the
 // local table and the live source). Upserts rather than requiring the row
 // to already exist — an admin can pre-assign a role to a real employee who
 // hasn't logged in yet; their base role/is_active/full_name etc. still take
 // their normal defaults/values, since upsert only ever touches the columns
 // actually listed in the payload.
+//
+// A plain 'admin' (not super_admin) may manage agent/team_leader/admin
+// accounts, but not hr or super_admin ones — enforced below on BOTH the
+// target's current role and the role being assigned, so an admin can't
+// touch an existing HR/Super Admin account OR promote someone into either
+// role. This is the real security boundary; EmployeeAccounts.jsx disables
+// the matching UI controls too, but that's just UX — this check is what
+// actually stops a direct API call from bypassing it.
 const VALID_ROLES = ['agent', 'team_leader', 'hr', 'admin', 'super_admin'];
+const RESTRICTED_ROLES_FOR_ADMIN = ['hr', 'super_admin'];
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -59,9 +68,10 @@ export default async function handler(req, res) {
     if (!requesterActive) {
       return res.status(403).json({ error: 'Account deactivated' });
     }
-    if (requesterRole !== 'super_admin') {
+    if (requesterRole !== 'super_admin' && requesterRole !== 'admin') {
       return res.status(403).json({ error: 'Insufficient permissions' });
     }
+    const requesterIsPlainAdmin = requesterRole === 'admin';
 
     if (requesterEmailLower === targetEmailLower) {
       return res.status(400).json({ error: "Can't change your own role or status here." });
@@ -69,6 +79,9 @@ export default async function handler(req, res) {
 
     if (role !== undefined && !VALID_ROLES.includes(role)) {
       return res.status(400).json({ error: `Invalid role: ${role}` });
+    }
+    if (requesterIsPlainAdmin && role !== undefined && RESTRICTED_ROLES_FOR_ADMIN.includes(role)) {
+      return res.status(403).json({ error: 'Only a Super Admin can assign the HR or Super Admin role.' });
     }
 
     const patch = { email: targetEmailLower };
@@ -92,11 +105,19 @@ export default async function handler(req, res) {
     // of what's currently there.
     const { data: existingTarget } = await supabase
       .from('admin_accounts')
-      .select('email')
+      .select('email,role,role_override')
       .eq('email', targetEmailLower)
       .limit(1);
     if (!existingTarget?.length) {
       patch.session_token = crypto.randomUUID();
+    }
+
+    if (requesterIsPlainAdmin) {
+      const targetRow = existingTarget?.[0];
+      const targetCurrentRole = (targetRow && (targetRow.role_override || targetRow.role)) || 'agent';
+      if (RESTRICTED_ROLES_FOR_ADMIN.includes(targetCurrentRole)) {
+        return res.status(403).json({ error: 'Only a Super Admin can modify an HR or Super Admin account.' });
+      }
     }
 
     const { error: upsertError } = await supabase.from('admin_accounts').upsert(patch, { onConflict: 'email' });
