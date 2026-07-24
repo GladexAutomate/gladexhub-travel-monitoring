@@ -40,6 +40,18 @@ const FUSIOO_SOURCES = [
       { name: 'Name of Airline', appId: 'id4454e501fd640579a7613ccf9251bda', table: 'gladexplore_name_of_airline' },
     ],
   },
+  {
+    // Schema differs from both other brands (confirmed live 2026-07-24) —
+    // booking-number field is `gde` here, not `gdx`. Only mirroring raw data
+    // for now; no cross-brand matching built on this yet.
+    source: 'pisodeals',
+    tokenEnv: 'PISODEALS_FUSIOO_ACCESS_TOKEN',
+    apps: [
+      { name: 'Booking Transactions', appId: 'iee905580b9994c13a64a9dab756b5df7', table: 'pisodeals_booking_transactions' },
+      { name: 'Ticket Details', appId: 'i63813320a56648f0b076228b7d328084', table: 'pisodeals_ticket_details' },
+      { name: 'Transfer Details', appId: 'i87da57663e4b4c1897f468dc57323cc6', table: 'pisodeals_transfer_details' },
+    ],
+  },
 ];
 
 // Flattened view of every app across every source, each carrying its own

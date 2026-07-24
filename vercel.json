@@ -11,6 +11,9 @@
     { "path": "/api/sync-fusioo-data?apps=gladexplore_booking_transactions", "schedule": "25 */2 * * *" },
     { "path": "/api/sync-fusioo-data?apps=gladexplore_ticket_details", "schedule": "30 */2 * * *" },
     { "path": "/api/sync-fusioo-data?apps=gladexplore_transfer_details", "schedule": "35 */2 * * *" },
-    { "path": "/api/sync-fusioo-data?apps=gladexplore_name_of_airline", "schedule": "40 */2 * * *" }
+    { "path": "/api/sync-fusioo-data?apps=gladexplore_name_of_airline", "schedule": "40 */2 * * *" },
+    { "path": "/api/sync-fusioo-data?apps=pisodeals_booking_transactions", "schedule": "45 */2 * * *" },
+    { "path": "/api/sync-fusioo-data?apps=pisodeals_ticket_details", "schedule": "50 */2 * * *" },
+    { "path": "/api/sync-fusioo-data?apps=pisodeals_transfer_details", "schedule": "55 */2 * * *" }
   ]
 }
