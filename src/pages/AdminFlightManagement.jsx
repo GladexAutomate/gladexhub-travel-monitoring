@@ -533,15 +533,22 @@ export default function AdminFlightManagement() {
     setArchivePage(1);
   }, [search, typeFilter, airlineFilter, teamFilter, agentFilter, dateFrom, dateTo, viewTab]);
 
-  // Split into upcoming (today or later, or no date at all — we can't tell
-  // if an undated record is past or future, so default to keeping it
-  // visible) vs archive (departure_date strictly before today).
+  // A departed flight stays visible in the main view for a few days after
+  // its departure date (agents still need to follow up on it) before moving
+  // to Archive — requested directly: 3 days, not the moment it departs.
+  const ARCHIVE_AFTER_DAYS = 3;
+  const archiveCutoffKey = useMemo(() => dateKeyOffset(-ARCHIVE_AFTER_DAYS), []);
+
+  // Split into upcoming (departure_date within the last ARCHIVE_AFTER_DAYS
+  // days, today, in the future, or no date at all — we can't tell if an
+  // undated record is past or future, so default to keeping it visible) vs
+  // archive (departure_date strictly before the cutoff).
   const { upcoming, archived } = useMemo(() => {
     const up = [];
     const arch = [];
     filtered.forEach((r) => {
       const d = getPrimaryDepartureDate(r);
-      if (d && d < todayKey) {
+      if (d && d < archiveCutoffKey) {
         arch.push(r);
       } else {
         up.push(r);
@@ -562,7 +569,7 @@ export default function AdminFlightManagement() {
     arch.sort(byReceivedDateDesc);
 
     return { upcoming: up, archived: arch };
-  }, [filtered, todayKey]);
+  }, [filtered, archiveCutoffKey]);
 
   const upcomingPageCount = Math.max(1, Math.ceil(upcoming.length / PAGE_SIZE));
   const upcomingPage = Math.min(page, upcomingPageCount);
