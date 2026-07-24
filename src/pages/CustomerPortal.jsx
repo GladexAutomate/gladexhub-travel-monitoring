@@ -34,35 +34,40 @@ export default function CustomerPortal() {
     else if (params.type === "ticket") filter = { ticket_number: params.ticket_number };
     else if (params.type === "email") filter = { customer_email: params.customer_email };
 
-    const results = await base44.entities.Booking.filter(filter);
+    try {
+      const results = await base44.entities.Booking.filter(filter);
 
-    if (params.type === "email" && params.last_name) {
-      const matched = results.find(b =>
-        b.customer_name?.toLowerCase()?.includes(params.last_name.toLowerCase())
-      );
-      if (matched) {
-        setBooking(matched);
+      if (params.type === "email" && params.last_name) {
+        const matched = results.find(b =>
+          b.customer_name?.toLowerCase()?.includes(params.last_name.toLowerCase())
+        );
+        if (matched) {
+          setBooking(matched);
+          const [events, emails] = await Promise.all([
+            base44.entities.TimelineEvent.filter({ booking_id: matched.id, is_customer_visible: true, is_published: true }),
+            base44.entities.EmailUpdate.filter({ linked_booking_id: matched.id, is_customer_visible: true }),
+          ]);
+          setTimelineEvents(events);
+          setEmailUpdates(emails);
+        } else {
+          setError("No booking found matching your details. Please check and try again.");
+        }
+      } else if (results.length > 0) {
+        setBooking(results[0]);
         const [events, emails] = await Promise.all([
-          base44.entities.TimelineEvent.filter({ booking_id: matched.id, is_customer_visible: true, is_published: true }),
-          base44.entities.EmailUpdate.filter({ linked_booking_id: matched.id, is_customer_visible: true }),
+          base44.entities.TimelineEvent.filter({ booking_id: results[0].id, is_customer_visible: true, is_published: true }),
+          base44.entities.EmailUpdate.filter({ linked_booking_id: results[0].id, is_customer_visible: true }),
         ]);
         setTimelineEvents(events);
         setEmailUpdates(emails);
       } else {
         setError("No booking found matching your details. Please check and try again.");
       }
-    } else if (results.length > 0) {
-      setBooking(results[0]);
-      const [events, emails] = await Promise.all([
-        base44.entities.TimelineEvent.filter({ booking_id: results[0].id, is_customer_visible: true, is_published: true }),
-        base44.entities.EmailUpdate.filter({ linked_booking_id: results[0].id, is_customer_visible: true }),
-      ]);
-      setTimelineEvents(events);
-      setEmailUpdates(emails);
-    } else {
-      setError("No booking found matching your details. Please check and try again.");
+    } catch (err) {
+      setError(err.message || "Something went wrong while searching. Please try again.");
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
   return (
