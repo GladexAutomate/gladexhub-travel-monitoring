@@ -1894,3 +1894,110 @@ function resetAllProcessedEmails() {
   });
   Logger.log('Removed Processed label from ' + threads.length + ' thread(s). Run fetchAllHistoricalEmails (possibly several times) to fully re-scan and re-populate Supabase.');
 }
+
+/**
+ * Narrower alternative to resetAllProcessedEmails — only un-labels emails
+ * for bookings that are still "ongoing" (mirrors the admin dashboard's own
+ * Archive cutoff: departure_date within the last ARCHIVE_AFTER_DAYS days,
+ * in the future, or missing entirely — see AdminFlightManagement.jsx's
+ * ARCHIVE_AFTER_DAYS), so a full historical re-scan of years-old, already-
+ * archived bookings isn't needed just to backfill the `body` field (or any
+ * future field) onto rows saved before that field existed. Run this, then
+ * fetchNewEmails/fetchAllHistoricalEmails to actually reprocess them.
+ */
+function resetProcessedForOngoingBookings() {
+  const props = PropertiesService.getScriptProperties();
+  const supabaseUrl = props.getProperty('SUPABASE_URL');
+  const supabaseKey = props.getProperty('SUPABASE_KEY');
+  if (!supabaseUrl || !supabaseKey) {
+    Logger.log('ERROR: Set SUPABASE_URL and SUPABASE_KEY in Project Settings > Script Properties before running.');
+    return;
+  }
+
+  const ARCHIVE_AFTER_DAYS = 3; // must match AdminFlightManagement.jsx's own constant
+  const cutoffKey = dateNDaysAgo_(ARCHIVE_AFTER_DAYS).replace(/\//g, '-');
+
+  // Only rows missing `body` (the specific gap being backfilled) AND whose
+  // first leg's departure_date is on/after the cutoff or absent entirely —
+  // same "can't tell, so keep it visible" fallback the dashboard itself uses
+  // for undated rows. PostgREST caps a single response at 1000 rows by
+  // default — paginated explicitly (Range header) rather than trusting one
+  // fetch to return everything, since a live check against the real table
+  // came back with exactly 1000 (i.e. more rows almost certainly exist
+  // past that page).
+  const baseUrl = supabaseUrl.replace(/\/$/, '') +
+    '/rest/v1/flight_emails?select=gmail_message_id' +
+    '&body=is.null' +
+    '&or=(flights->0->>departure_date.gte.' + cutoffKey + ',flights->0->>departure_date.is.null)';
+  const pageSize = 1000;
+  const rows = [];
+  let from = 0;
+  while (true) {
+    const response = UrlFetchApp.fetch(baseUrl, {
+      headers: {
+        apikey: supabaseKey,
+        Authorization: 'Bearer ' + supabaseKey,
+        Range: from + '-' + (from + pageSize - 1),
+      },
+      muteHttpExceptions: true,
+    });
+    const code = response.getResponseCode();
+    if (code !== 200 && code !== 206) {
+      Logger.log('ERROR fetching ongoing bookings from Supabase (' + code + '): ' + response.getContentText());
+      return;
+    }
+    const page = JSON.parse(response.getContentText());
+    rows.push.apply(rows, page);
+    if (page.length < pageSize) break;
+    from += pageSize;
+  }
+
+  const messageIds = Array.from(new Set(rows.map(function (r) { return r.gmail_message_id; }).filter(Boolean)));
+  Logger.log('Found ' + messageIds.length + ' ongoing booking email(s) with no body yet.');
+  if (messageIds.length === 0) return;
+
+  // A run this size (thousands of individual GmailApp calls) can plausibly
+  // exceed Apps Script's ~6 minute execution limit — stop cleanly with
+  // headroom to spare rather than risk a hard kill mid-loop, same
+  // MAX_RUNTIME_MS budget runSync_ itself uses. Re-running this function
+  // picks up right where it left off, since already-reset threads no
+  // longer show up in the next query (their next fetchNewEmails/
+  // fetchAllHistoricalEmails run will have given them a body by then —
+  // and if not yet reprocessed, they simply have no Processed/NeedsReview
+  // label to remove a second time, which is harmless).
+  const startTime = Date.now();
+  const processedLabel = GmailApp.getUserLabelByName(CONFIG.LABEL_PROCESSED);
+  const needsReviewLabel = GmailApp.getUserLabelByName(CONFIG.LABEL_NEEDS_REVIEW);
+  let reset = 0;
+  let stoppedEarly = false;
+  for (let i = 0; i < messageIds.length; i++) {
+    if (Date.now() - startTime > CONFIG.MAX_RUNTIME_MS) {
+      stoppedEarly = true;
+      break;
+    }
+    const id = messageIds[i];
+    try {
+      const message = GmailApp.getMessageById(id);
+      if (!message) {
+        Logger.log('Message ' + id + ' no longer exists in Gmail — skipping.');
+        continue;
+      }
+      const thread = message.getThread();
+      if (processedLabel) thread.removeLabel(processedLabel);
+      if (needsReviewLabel) thread.removeLabel(needsReviewLabel);
+      reset++;
+    } catch (err) {
+      Logger.log('Could not reset message ' + id + ': ' + err);
+    }
+  }
+  Logger.log('Reset ' + reset + ' thread(s) out of ' + messageIds.length + ' found.');
+  if (stoppedEarly) {
+    Logger.log('Stopped early to avoid the execution time limit — run this function again to continue with the rest.');
+  }
+  // fetchNewEmails passes afterDate=null to buildQuery_, which then applies
+  // NO after: clause at all (not "recent only") — so it picks up these
+  // reset threads regardless of how old they are, no manual date cutoff
+  // needed. It already runs automatically every 5 minutes; no extra step
+  // required beyond this function.
+  Logger.log('The next scheduled fetchNewEmails run (every 5 minutes) will reprocess these — body will be captured this time. No manual step needed beyond this function.');
+}
