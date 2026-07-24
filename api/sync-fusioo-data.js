@@ -52,6 +52,11 @@ const FUSIOO_SOURCES = [
       { name: 'Ticket Details', appId: 'i4cf087422dd949e5aa9f83b4732656f8', table: 'gladexplore_ticket_details' },
       { name: 'Transfer Details', appId: 'i7822b525967642ec9d2df2d933ea56a2', table: 'gladexplore_transfer_details' },
       { name: 'Name of Airline', appId: 'id4454e501fd640579a7613ccf9251bda', table: 'gladexplore_name_of_airline' },
+      { name: 'Tours and Package', appId: 'ia61268c9098b4038ac7c57a53a3f2d37', table: 'gladexplore_tours_and_package' },
+      { name: 'Land Details', appId: 'i81615b6c06d24c21b17af25923a4fea9', table: 'gladexplore_land_details' },
+      { name: 'Hotel Details', appId: 'i308e543891554d8fb93c34ef74d3e0d9', table: 'gladexplore_hotel_details' },
+      { name: 'Tour Details', appId: 'i332fae722f924bb1bed5621aaa89987d', table: 'gladexplore_tour_details' },
+      { name: 'Destination', appId: 'i84271c4d17bf4d738ff1f8976cec1cac', table: 'gladexplore_destination' },
     ],
   },
   {
@@ -64,6 +69,10 @@ const FUSIOO_SOURCES = [
       { name: 'Booking Transactions', appId: 'iee905580b9994c13a64a9dab756b5df7', table: 'pisodeals_booking_transactions' },
       { name: 'Ticket Details', appId: 'i63813320a56648f0b076228b7d328084', table: 'pisodeals_ticket_details' },
       { name: 'Transfer Details', appId: 'i87da57663e4b4c1897f468dc57323cc6', table: 'pisodeals_transfer_details' },
+      { name: 'Tours and Package', appId: 'i35cd4022d17843f5af1bd1c2482ecef4', table: 'pisodeals_tours_and_package' },
+      { name: 'Hotel Details', appId: 'i0a90145913ae47a798e65685c0934305', table: 'pisodeals_hotel_details' },
+      { name: 'Destination', appId: 'i17def23f72ac42f1abf74edd4e6d4da8', table: 'pisodeals_destination' },
+      { name: 'Tour Details', appId: 'i024789c434834d2ca0e1e005d97576b0', table: 'pisodeals_tour_details' },
     ],
   },
 ];
