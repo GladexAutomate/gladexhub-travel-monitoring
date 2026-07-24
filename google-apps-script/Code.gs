@@ -76,6 +76,52 @@ const CONFIG = {
   EMAIL_QUOTA_WARNING_THRESHOLD: 20,
 };
 
+// Shared keyword lists for reschedule/cancellation detection — used by every
+// airline's detectXType_ below AND by the unknown-sender safety net's query,
+// so a wording recognized in one place is recognized everywhere instead of
+// each detector maintaining its own slightly-different list. Deliberately
+// exact multi-word phrases (or single words unlikely to appear outside a
+// real disruption notice), same precision reasoning as
+// checkForUnknownAirlineSenders_'s own query below.
+const CANCELLATION_KEYWORDS = [
+  'cancel', 'has been cancelled', 'has been canceled',
+  'cancelled flight', 'flight cancellation',
+];
+const RESCHEDULE_KEYWORDS = [
+  'reschedule', 'has been rescheduled', 'schedule has been changed',
+  'has been changed', 'schedule change', 'schedule changes', 'schedule update',
+  'new departure time', 'new arrival time', 'flight reschedule', 'gate change',
+];
+
+function matchesAny_(text, keywords) {
+  return keywords.some(function (k) { return text.indexOf(k) !== -1; });
+}
+
+// Fallback detect/parse trio for a sender we know is a real airline/travel
+// platform (the user identified it by name) but for which no real sample
+// email has been seen yet — see the file header's ADDING A NEW AIRLINE note.
+// Classification still works (shared keyword lists below), but booking
+// ref/flight extraction deliberately always returns null/[] rather than
+// guessing at a layout with zero samples to verify against — that's safe
+// specifically because processMessage_ already saves a needs_attention
+// placeholder (subject line as a surrogate reference) whenever parsing comes
+// up empty, so the email is never silently lost while waiting for a real
+// sample to build a proper parser from.
+function detectGenericAirlineType_(subject, body) {
+  const subj = subject.toLowerCase();
+  const bod = (body || '').toLowerCase();
+  if (matchesAny_(subj, CANCELLATION_KEYWORDS) || matchesAny_(bod, CANCELLATION_KEYWORDS)) return 'cancellation';
+  if (matchesAny_(subj, RESCHEDULE_KEYWORDS) || matchesAny_(bod, RESCHEDULE_KEYWORDS)) return 'reschedule';
+  if (subj.indexOf('confirmation') !== -1 || subj.indexOf('itinerary') !== -1 || subj.indexOf('e-ticket') !== -1 || subj.indexOf('booking') !== -1) return 'confirmation';
+  return null;
+}
+function parseGenericBookingRef_() {
+  return null;
+}
+function parseGenericFlights_() {
+  return [];
+}
+
 // Each entry: { name, senderQuery, detectEmailType, parseBookingRef, parseFlights }.
 // senderQuery is a Gmail search fragment, e.g. 'from:(a@x.com OR b@y.com)'.
 const AIRLINES = [
@@ -84,40 +130,49 @@ const AIRLINES = [
   // much larger backlog to fully drain across many manual runs.
   {
     name: 'AirAsia',
-    senderQuery: 'from:noreplycustsupport@airasia.com',
+    // itinerary@booking.airasia.com added per a list of real airline senders
+    // provided directly — no verified sample yet for this specific address,
+    // so it rides on the same detect/parse functions as the original
+    // sender; a body layout that doesn't match falls safely to NeedsReview.
+    senderQuery: 'from:(noreplycustsupport@airasia.com OR itinerary@booking.airasia.com)',
     detectEmailType: detectAirAsiaType_,
     parseBookingRef: parseAirAsiaBookingRef_,
     parseFlights: parseAirAsiaFlights_,
   },
   {
     name: 'Cebu Pacific',
-    // NOTE: noreply@groups.cebupacificair.com was tried here too, but that's
-    // Cebu Pacific's B2B GROUP QUOTATION system (subjects like "Quotation
-    // sent (Ref ID GRP...)", "Payment expiry alert") — a completely different
-    // email stream, not individual flight bookings. It flooded NeedsReview
+    // noreply@groups.cebupacificair.com was EXCLUDED previously — it's Cebu
+    // Pacific's B2B GROUP QUOTATION system (subjects like "Quotation sent
+    // (Ref ID GRP...)", "Payment expiry alert"), a completely different
+    // email stream from individual bookings, and it once flooded NeedsReview
     // with false parse errors (quotation emails happen to say "confirmed"
-    // somewhere in the body, tripping detectCebuPacificType_). Deliberately
-    // excluded.
-    senderQuery: 'from:(no-reply@email.mycebupacific.com OR noreply@cebupacificair.com)',
+    // somewhere in the body). Re-added per explicit request (provided in a
+    // list of real airline senders) — if that same flooding recurs, this is
+    // the first place to look.
+    senderQuery: 'from:(no-reply@email.mycebupacific.com OR noreply@cebupacificair.com OR noreply@groups.cebupacificair.com OR no-reply@swap.cebupacificair.com)',
     detectEmailType: detectCebuPacificType_,
     parseBookingRef: parseCebuPacificBookingRef_,
     parseFlights: parseCebuPacificFlights_,
   },
   {
     name: 'HK Express',
-    senderQuery: 'from:noreply@yourbooking.hkexpress.com',
+    // noreply@booking.hkexpress.com is a DIFFERENT address from the existing
+    // noreply@yourbooking.hkexpress.com (booking. vs yourbooking. subdomain)
+    // — added per the same real-sender list, no verified sample for it yet.
+    senderQuery: 'from:(noreply@yourbooking.hkexpress.com OR noreply@booking.hkexpress.com)',
     detectEmailType: detectHKExpressType_,
     parseBookingRef: parseHKExpressBookingRef_,
     parseFlights: parseHKExpressFlights_,
   },
   {
     name: 'Philippine Airlines',
-    // THREE distinct PAL sender addresses feed this one entry — found via
-    // checkForUnknownAirlineSenders_, which is exactly the gap it exists to
-    // catch: noreply@philippineairlines.com (original, boarding-pass-style
-    // confirmations) never covered the other two at all.
+    // mypalupgrade@ and onlinebooking@ added per the real-sender list, no
+    // verified sample yet for either. no-reply@comms.philippineairlines.com
+    // is a DIFFERENT mailbox from the existing
+    // palflightadvisory@comms.philippineairlines.com (same domain, different
+    // local part — Gmail's from: match is exact-address, so both are needed).
     //   no-reply@philippineairlines.com (note the hyphen — a DIFFERENT
-    //     address from the one above) also sends "Your Flight Change is
+    //     address from noreply@) also sends "Your Flight Change is
     //     Confirmed" reschedule notices, and post-flight satisfaction
     //     surveys (harmless — those don't match any detectPALType_ keyword,
     //     so they're just skipped as unrecognized, not mis-saved). Its
@@ -128,10 +183,51 @@ const AIRLINES = [
     //     Advisory and Schedule Change Advisory emails — verified against
     //     real samples, handled in parsePALFlights_/parsePALBookingRef_
     //     below.
-    senderQuery: 'from:(noreply@philippineairlines.com OR no-reply@philippineairlines.com OR palflightadvisory@comms.philippineairlines.com)',
+    senderQuery: 'from:(noreply@philippineairlines.com OR no-reply@philippineairlines.com OR palflightadvisory@comms.philippineairlines.com OR mypalupgrade@philippineairlines.com OR onlinebooking@philippineairlines.com OR no-reply@comms.philippineairlines.com)',
     detectEmailType: detectPALType_,
     parseBookingRef: parsePALBookingRef_,
     parseFlights: parsePALFlights_,
+  },
+  // The four entries below are real senders (provided directly) with no
+  // verified sample email yet — see detectGenericAirlineType_'s own comment
+  // for why booking ref/flight parsing is deliberately a no-op for these
+  // rather than a guessed one. Once a real sample is pulled (debugLogSample,
+  // pointed at one of these addresses) and verified, give it a proper
+  // detect/parseBookingRef/parseFlights trio like the airlines above.
+  {
+    name: 'Trip.com',
+    senderQuery: 'from:(en_flt_noreply@trip.com OR en_flight@trip.com)',
+    detectEmailType: detectGenericAirlineType_,
+    parseBookingRef: parseGenericBookingRef_,
+    parseFlights: parseGenericFlights_,
+  },
+  {
+    name: 'Scoot',
+    senderQuery: 'from:notifly@notify.flyscoot.com',
+    detectEmailType: detectGenericAirlineType_,
+    parseBookingRef: parseGenericBookingRef_,
+    parseFlights: parseGenericFlights_,
+  },
+  {
+    name: 'MyTrip',
+    senderQuery: 'from:no-reply@support.ph.mytrip.com',
+    detectEmailType: detectGenericAirlineType_,
+    parseBookingRef: parseGenericBookingRef_,
+    parseFlights: parseGenericFlights_,
+  },
+  {
+    name: 'Unregistered Contact',
+    // gac_javier@yahoo.com — a personal-looking address, not an airline
+    // domain like every other entry here. Included because it was named
+    // directly in the same real-sender list; likely a GDS/travel-partner
+    // contact who forwards advisories manually rather than an airline's own
+    // automated system. Flagged with its own airline "name" (shows up as
+    // such on the dashboard) so it's obviously not a real airline at a
+    // glance, in case it turns out to be noise instead.
+    senderQuery: 'from:gac_javier@yahoo.com',
+    detectEmailType: detectGenericAirlineType_,
+    parseBookingRef: parseGenericBookingRef_,
+    parseFlights: parseGenericFlights_,
   },
 ];
 
@@ -212,7 +308,7 @@ function runSync_(afterDate, maxThreadsPerAirline) {
     if (stoppedEarly) return; // out of time budget — skip remaining airlines this run
 
     const query = buildQuery_(airline, afterDate);
-    let saved = 0, duplicates = 0, needsReview = 0, networkErrors = 0, threadsSeen = 0;
+    let saved = 0, duplicates = 0, needsReview = 0, networkErrors = 0, noise = 0, threadsSeen = 0;
 
     // The whole per-airline loop (including GmailApp.search itself) is
     // wrapped in one try/catch — unlike every operation inside it, the
@@ -271,6 +367,7 @@ function runSync_(afterDate, maxThreadsPerAirline) {
               else if (result === 'duplicate') duplicates++;
               else if (result === 'parse_error') { needsReview++; threadHasParseError = true; }
               else if (result === 'network_error') { networkErrors++; threadHasNetworkError = true; }
+              else if (result === 'noise') noise++;
             });
 
             // A network error means Supabase may not have received the data yet, so
@@ -295,6 +392,7 @@ function runSync_(afterDate, maxThreadsPerAirline) {
       ', saved: ' + saved +
       ', duplicates skipped: ' + duplicates +
       ', needs review: ' + needsReview +
+      ', noise skipped: ' + noise +
       ', network errors (will retry next run): ' + networkErrors
     );
   });
@@ -556,6 +654,21 @@ const NOISE_SUBJECT_SUBSTRINGS = [
   // Expedia domain), so this can only be caught by subject, not by
   // NOISE_SENDER_DOMAINS. Found via a live run.
   'taap travel confirmation',
+  // Cebu Pacific ancillary/marketing sends — routine billing/upsell/survey
+  // emails, not a flight disruption or change. Found cluttering the
+  // dashboard as "(unclassified)" rows from an already-known airline sender
+  // — see the isNoisySubject_ use in processMessage_ below, which is what
+  // actually keeps these off the dashboard (this list alone only protects
+  // the unknown-sender safety net).
+  'your invoice for booking', // "Your Invoice for Booking No. XXXXXX"
+  'is a gift', // "Your feedback is a gift, <name>!" post-flight survey
+  'need add-ons', // "<name>, need add-ons for your trip?" upsell
+  'get ready for your trip', // pre-departure reminder, not a change notice
+  // PAL's own marketing send — "PAL Travel Advisory: Register for your
+  // <Destination> Trip" — deliberately NOT just "advisory", which would also
+  // match the real "Cancellation Advisory:"/"Schedule Change Advisory:"
+  // subjects detectPALType_ depends on.
+  'travel advisory: register',
 ];
 
 function isLikelyNoise_(fromEmail, subject) {
@@ -563,7 +676,15 @@ function isLikelyNoise_(fromEmail, subject) {
   if (NOISE_SENDER_DOMAINS.some(function (d) { return domain === d || domain.endsWith('.' + d); })) return true;
   if (fromEmail.indexOf('mailer-daemon') !== -1 || fromEmail.indexOf('postmaster') !== -1) return true;
 
-  const subj = subject.toLowerCase();
+  return isNoisySubject_(subject);
+}
+
+// Subject-only half of isLikelyNoise_ — used by processMessage_ below for
+// emails from an ALREADY-KNOWN airline sender (no domain/sender check makes
+// sense there; the sender is already a real airline, the noise is in the
+// CONTENT — invoices, surveys, upsells, marketing — not who sent it).
+function isNoisySubject_(subject) {
+  const subj = (subject || '').toLowerCase();
   return NOISE_SUBJECT_SUBSTRINGS.some(function (s) { return subj.indexOf(s) !== -1; });
 }
 
@@ -588,12 +709,13 @@ function checkForUnknownAirlineSenders_(supabaseUrl, supabaseKey, afterDate) {
     '(subject:(itinerary OR "booking reference" OR "e-ticket" OR eticket OR ' +
     '"flight confirmation" OR "boarding pass" OR reschedule OR rebooking OR rebook OR ' +
     'cancellation OR cancelled OR canceled OR "flight change" OR "schedule change" OR ' +
-    '"schedule update" OR "flight update" OR "flight advisory" OR "travel advisory" OR ' +
-    '"flight disruption" OR disrupted OR delayed OR delay OR postponed OR diverted OR ' +
-    'diversion OR "irregular operations" OR IROP OR PNR) OR ' +
+    '"schedule changes" OR "schedule update" OR "flight update" OR "flight advisory" OR ' +
+    '"travel advisory" OR "flight disruption" OR disrupted OR delayed OR delay OR ' +
+    'postponed OR diverted OR diversion OR "irregular operations" OR IROP OR PNR OR ' +
+    '"gate change" OR "flight reschedule" OR "cancelled flight" OR "flight cancellation") OR ' +
     '"has been cancelled" OR "has been canceled" OR "has been rescheduled" OR ' +
-    '"schedule has been changed" OR "has been delayed" OR "new departure time" OR ' +
-    '"now scheduled to depart")' +
+    '"has been changed" OR "schedule has been changed" OR "has been delayed" OR ' +
+    '"new departure time" OR "new arrival time" OR "now scheduled to depart")' +
     ' -label:' + CONFIG.LABEL_UNKNOWN_SENDER +
     ' -label:' + CONFIG.LABEL_PROCESSED +
     ' -label:' + CONFIG.LABEL_NEEDS_REVIEW;
@@ -705,7 +827,19 @@ function saveNeedsAttentionRow_(message, airlineLabel, supabaseUrl, supabaseKey)
     flights: [],
     received_date: message.getDate().toISOString(),
     gmail_message_id: message.getId(),
+    body: truncateBody_(message.getPlainBody()),
   }, supabaseUrl, supabaseKey);
+}
+
+// Body text gets stored on the row so the dashboard can show the actual
+// email content (see saveToSupabase_/saveNeedsAttentionRow_ below) — capped
+// well short of any realistic Postgres/network-payload concern, generous
+// enough to hold a full airline notice (even a verbose one) without ever
+// needing more than one row per email.
+const BODY_STORAGE_MAX_CHARS = 4000;
+function truncateBody_(body) {
+  const b = body || '';
+  return b.length > BODY_STORAGE_MAX_CHARS ? b.slice(0, BODY_STORAGE_MAX_CHARS) + '…' : b;
 }
 
 function processMessage_(message, airline, supabaseUrl, supabaseKey) {
@@ -713,6 +847,19 @@ function processMessage_(message, airline, supabaseUrl, supabaseKey) {
   const body = message.getPlainBody() || '';
   const receivedDate = message.getDate();
   const gmailMessageId = message.getId();
+
+  // Ancillary/marketing sends from an already-known airline sender (invoice,
+  // post-flight survey, upsell, pre-departure reminder, PAL's own "Register
+  // for your trip" promo) — real content, but never a disruption/change
+  // notice, so it doesn't belong on a dashboard meant for exactly that.
+  // Checked before classification: an invoice or survey subject would
+  // otherwise fall through detectEmailType as unrecognized and get saved as
+  // an "(unclassified)" needs_attention row, cluttering the dashboard with
+  // known-noise instead of genuinely unrecognized wording.
+  if (isNoisySubject_(subject)) {
+    Logger.log('NOISE (known sender, non-disruption content): "' + subject + '" [' + gmailMessageId + ']');
+    return 'noise';
+  }
 
   const emailType = airline.detectEmailType(subject, body);
   if (!emailType) {
@@ -764,6 +911,7 @@ function processMessage_(message, airline, supabaseUrl, supabaseKey) {
     flights: flights,
     received_date: receivedDate.toISOString(),
     gmail_message_id: gmailMessageId,
+    body: truncateBody_(body),
   };
 
   return saveToSupabase_(record, supabaseUrl, supabaseKey);
@@ -781,9 +929,11 @@ function detectCebuPacificType_(subject, body) {
   // doesn't get misclassified as a plain booking confirmation. Body checked
   // too (not just subject) — a disruption notice with a generic subject but
   // the real wording only in the body must not fall through unclassified
-  // (see the equivalent fix in checkForUnknownAirlineSenders_).
-  if (subj.indexOf('cancell') !== -1 || bod.indexOf('has been cancelled') !== -1 || bod.indexOf('has been canceled') !== -1) return 'cancellation';
-  if (subj.indexOf('reschedule') !== -1 || bod.indexOf('has been rescheduled') !== -1 || bod.indexOf('schedule has been changed') !== -1) return 'reschedule';
+  // (see the equivalent fix in checkForUnknownAirlineSenders_). Shared
+  // CANCELLATION_KEYWORDS/RESCHEDULE_KEYWORDS catch wordings not specific to
+  // this airline (e.g. "gate change", "new departure time").
+  if (subj.indexOf('cancell') !== -1 || matchesAny_(subj, CANCELLATION_KEYWORDS) || matchesAny_(bod, CANCELLATION_KEYWORDS)) return 'cancellation';
+  if (subj.indexOf('reschedule') !== -1 || matchesAny_(subj, RESCHEDULE_KEYWORDS) || matchesAny_(bod, RESCHEDULE_KEYWORDS)) return 'reschedule';
   if (subj.indexOf('itinerary receipt') !== -1 || bod.indexOf('confirmed') !== -1) return 'confirmation';
 
   return null;
@@ -878,11 +1028,11 @@ function detectAirAsiaType_(subject, body) {
   // through unclassified (see the equivalent fix in
   // checkForUnknownAirlineSenders_). cancelMatch below already proves "has
   // been cancelled" appears verbatim in real AirAsia cancellation bodies.
-  if (subj.indexOf('cancel') !== -1 || bod.indexOf('has been cancelled') !== -1 || bod.indexOf('has been canceled') !== -1) return 'cancellation';
+  if (subj.indexOf('cancel') !== -1 || matchesAny_(subj, CANCELLATION_KEYWORDS) || matchesAny_(bod, CANCELLATION_KEYWORDS)) return 'cancellation';
   // "Important Update: Extended Flight Change Option..." is a reroute
   // notice — same family as a reschedule, just a different subject phrasing
   // (verified against a real sample: no "reschedule" word in the subject at all).
-  if (subj.indexOf('reschedule') !== -1 || subj.indexOf('flight change') !== -1 || bod.indexOf('has been rescheduled') !== -1) return 'reschedule';
+  if (subj.indexOf('reschedule') !== -1 || subj.indexOf('flight change') !== -1 || matchesAny_(subj, RESCHEDULE_KEYWORDS) || matchesAny_(bod, RESCHEDULE_KEYWORDS)) return 'reschedule';
   if (subj.indexOf('confirmation') !== -1 || subj.indexOf('itinerary') !== -1 || subj.indexOf('e-ticket') !== -1) return 'confirmation';
   return null;
 }
@@ -1078,8 +1228,8 @@ function parseAirAsiaFlights_(body) {
 function detectHKExpressType_(subject, body) {
   const subj = subject.toLowerCase();
   const bod = body.toLowerCase();
-  if (subj.indexOf('cancel') !== -1 || bod.indexOf('has been cancelled') !== -1 || bod.indexOf('has been canceled') !== -1) return 'cancellation';
-  if (subj.indexOf('reschedule') !== -1 || subj.indexOf('changed') !== -1 || bod.indexOf('has been rescheduled') !== -1 || bod.indexOf('schedule has been changed') !== -1) return 'reschedule';
+  if (subj.indexOf('cancel') !== -1 || matchesAny_(subj, CANCELLATION_KEYWORDS) || matchesAny_(bod, CANCELLATION_KEYWORDS)) return 'cancellation';
+  if (subj.indexOf('reschedule') !== -1 || subj.indexOf('changed') !== -1 || matchesAny_(subj, RESCHEDULE_KEYWORDS) || matchesAny_(bod, RESCHEDULE_KEYWORDS)) return 'reschedule';
   if (subj.indexOf('itinerary') !== -1 || subj.indexOf('confirmation') !== -1 || subj.indexOf('check in') !== -1 || subj.indexOf('check-in') !== -1) return 'confirmation';
   return null;
 }
@@ -1229,14 +1379,14 @@ function detectPALType_(subject, body) {
   // sync run (was falling through to null/unrecognized entirely, meaning
   // these genuine reschedule notices were invisible before this).
   if (subj.indexOf('schedule has been changed') !== -1) return 'reschedule';
-  if (subj.indexOf('cancel') !== -1 || bod.indexOf('has been cancelled') !== -1 || bod.indexOf('has been canceled') !== -1) return 'cancellation';
+  if (subj.indexOf('cancel') !== -1 || matchesAny_(subj, CANCELLATION_KEYWORDS) || matchesAny_(bod, CANCELLATION_KEYWORDS)) return 'cancellation';
   // "Your Flight Change is Confirmed - ..." is a reschedule, not a fresh
   // booking confirmation — verified against a real sample. Checked before
   // the confirm check below since that subject also contains "confirmed".
   // Body checked too, same reasoning as the cancellation check above — a
   // reschedule notice with a generic subject must not fall through
   // unclassified (see the equivalent fix in checkForUnknownAirlineSenders_).
-  if (subj.indexOf('reschedul') !== -1 || subj.indexOf('rebook') !== -1 || subj.indexOf('flight change') !== -1 || bod.indexOf('has been rescheduled') !== -1 || bod.indexOf('schedule has been changed') !== -1) return 'reschedule';
+  if (subj.indexOf('reschedul') !== -1 || subj.indexOf('rebook') !== -1 || subj.indexOf('flight change') !== -1 || matchesAny_(subj, RESCHEDULE_KEYWORDS) || matchesAny_(bod, RESCHEDULE_KEYWORDS)) return 'reschedule';
   // 'confirm' (not just 'confirmation') so "...is Confirmed" subjects match too.
   if (subj.indexOf('boarding pass') !== -1 || subj.indexOf('check') !== -1 || subj.indexOf('itinerary') !== -1 || subj.indexOf('confirm') !== -1) return 'confirmation';
   return null;
