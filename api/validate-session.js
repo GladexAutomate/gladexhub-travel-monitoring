@@ -49,16 +49,24 @@ export default async function handler(req, res) {
     const supabase = createClient(automateUrl, serviceKey);
     const { data: localRows, error: localError } = await supabase
       .from('admin_accounts')
-      .select('role,team_name,role_override,is_active_override,session_token')
+      .select('role,team_name,role_override,is_active_override,session_token,last_login')
       .eq('email', trimmed)
       .limit(1);
     if (localError) throw localError;
     const local = localRows?.[0] || null;
 
+    // A row that's never completed a real login (last_login still null —
+    // an admin pre-assigned it a role, or it doesn't exist locally at all)
+    // has never been issued a session_token either, so the check below
+    // would otherwise silently pass for anyone who just knows this email.
+    if (!local?.last_login) {
+      return res.status(200).json({ valid: false, reason: local ? 'invalid_token' : 'not_found' });
+    }
+
     // Token check — if the stored token doesn't match, invalidate the session.
     // On first login the token is always stored before this runs, so a missing
     // token in the DB means the row was pre-created without one (admin pre-assign).
-    if (local && local.session_token && local.session_token !== _token) {
+    if (local.session_token && local.session_token !== _token) {
       return res.status(200).json({ valid: false, reason: 'invalid_token' });
     }
 

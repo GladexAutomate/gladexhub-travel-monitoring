@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { RefreshCw, UserCircle, Search, ChevronUp, ChevronDown, Eye, EyeOff, Copy, Check } from "lucide-react";
+import { RefreshCw, UserCircle, Search, ChevronUp, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const ROLE_LABELS = {
@@ -51,8 +51,6 @@ export default function EmployeeAccounts() {
   const [roleFilter, setRoleFilter] = useState("all");
   const [sortKey, setSortKey] = useState("employee_code");
   const [sortDir, setSortDir] = useState("asc");
-  const [revealedId, setRevealedId]   = useState(null);
-  const [copiedId, setCopiedId]       = useState(null);
 
   const { data: accounts = [], isLoading, isFetching, isError, refetch } = useQuery({
     queryKey: ["synced_employee_list"],
@@ -72,14 +70,6 @@ export default function EmployeeAccounts() {
       }
     },
   });
-
-  function copyCredentials(account) {
-    const text = `Employee Code: ${account.employee_code}\nPassword: ${account.password}`;
-    navigator.clipboard.writeText(text).then(() => {
-      setCopiedId(account.id);
-      setTimeout(() => setCopiedId(null), 2000);
-    });
-  }
 
   // Writes to role_override/is_active_override (not the synced role/
   // is_active) — see updateEmployeeAccount/entry.ts and the fields'
@@ -221,7 +211,6 @@ export default function EmployeeAccounts() {
                     <TableHead>Department</TableHead>
                     <SortableHead sortField="role" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort}>Role</SortableHead>
                     <SortableHead sortField="is_active" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort}>Status</SortableHead>
-                    <TableHead>Credentials</TableHead>
                     <TableHead className="text-right">Action</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -250,8 +239,6 @@ export default function EmployeeAccounts() {
                   {!isLoading && !isError && filtered.map((account) => {
                     const isUpdating = updateAccount.isPending && updateAccount.variables?.account.id === account.id;
                     const isSelf = account.email && account.email === user?.email;
-                    const revealed = revealedId === account.id;
-                    const justCopied = copiedId === account.id;
                     return (
                       <TableRow key={account.id}>
                         <TableCell className="font-medium">{account.full_name || "—"}</TableCell>
@@ -278,23 +265,6 @@ export default function EmployeeAccounts() {
                             <Badge className="bg-emerald-100 text-emerald-700 border border-emerald-200">Active</Badge>
                           ) : (
                             <Badge className="bg-muted text-muted-foreground border border-border">Inactive</Badge>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {account.password ? (
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-mono text-xs">
-                                {revealed ? account.password : "••••••••"}
-                              </span>
-                              <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => setRevealedId(revealed ? null : account.id)}>
-                                {revealed ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                              </Button>
-                              <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => copyCredentials(account)}>
-                                {justCopied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
-                              </Button>
-                            </div>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
                           )}
                         </TableCell>
                         <TableCell className="text-right">

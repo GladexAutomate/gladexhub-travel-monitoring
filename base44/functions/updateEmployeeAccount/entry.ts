@@ -25,12 +25,20 @@ Deno.serve(async (req) => {
 
     const { data: requesterRows, error: requesterError } = await supabase
       .from('admin_accounts')
-      .select('role,role_override,is_active,is_active_override,session_token')
+      .select('role,role_override,is_active,is_active_override,session_token,last_login')
       .eq('email', requesterEmailLower)
       .limit(1);
     if (requesterError) throw requesterError;
     const requester = requesterRows?.[0];
     if (!requester) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Same reasoning as query-supabase.js's requester check: a row that's
+    // never completed a real login has never been issued a session_token
+    // either, so the null-token leniency below would otherwise let anyone
+    // who knows this email act as its (possibly super_admin) role.
+    if (!requester.last_login) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
 

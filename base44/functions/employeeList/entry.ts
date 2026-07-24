@@ -41,7 +41,7 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(automateUrl, serviceKey);
     const [{ data: localAll, error: localError }, sourceList] = await Promise.all([
-      supabase.from('admin_accounts').select('email,role,team_name,role_override,is_active_override,session_token'),
+      supabase.from('admin_accounts').select('email,role,team_name,role_override,is_active_override,session_token,last_login'),
       fetchAllEmployeeAccounts(sourceUrl, sourceKey),
     ]);
     if (localError) throw localError;
@@ -63,7 +63,14 @@ Deno.serve(async (req) => {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    if (requesterLocal?.session_token && requesterLocal.session_token !== _token) {
+    // An account that never completed a real login (last_login still null)
+    // never got a session_token minted either, so the check below would
+    // otherwise silently pass for anyone who just knows this email.
+    if (!requesterLocal?.last_login) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    if (requesterLocal.session_token && requesterLocal.session_token !== _token) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
 

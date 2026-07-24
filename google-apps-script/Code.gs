@@ -135,20 +135,19 @@ const AIRLINES = [
   },
 ];
 
-// Flat list of every sender address configured in AIRLINES above — kept as a
-// separate plain list (rather than parsing each senderQuery's Gmail-search
-// syntax back apart) purely so checkForUnknownAirlineSenders_ below can do a
-// simple address comparison. MUST be kept in sync by hand whenever a sender
-// is added, removed, or changed above.
-const KNOWN_AIRLINE_SENDERS = [
-  'noreplycustsupport@airasia.com',
-  'no-reply@email.mycebupacific.com',
-  'noreply@cebupacificair.com',
-  'noreply@yourbooking.hkexpress.com',
-  'noreply@philippineairlines.com',
-  'no-reply@philippineairlines.com',
-  'palflightadvisory@comms.philippineairlines.com',
-];
+// Flat list of every sender address configured in AIRLINES above, so
+// checkForUnknownAirlineSenders_ below can do a simple address comparison.
+// Derived automatically from each airline's senderQuery (rather than
+// hand-duplicated) so it can never silently drift out of sync when a sender
+// is added, removed, or changed above — a hand-maintained copy that fell out
+// of sync would either flag a now-configured sender as "unknown" (harmless,
+// just a spurious alert) or, worse, treat a sender actually REMOVED from
+// AIRLINES as still "known" and silently drop its emails from both tracks
+// at once.
+const KNOWN_AIRLINE_SENDERS = AIRLINES.reduce(function (senders, airline) {
+  const matches = airline.senderQuery.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) || [];
+  return senders.concat(matches.map(function (s) { return s.toLowerCase(); }));
+}, []);
 
 /**
  * Run this ONCE manually (Apps Script editor > select this function > Run) to
