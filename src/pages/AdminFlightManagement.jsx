@@ -18,9 +18,7 @@ import {
   ChevronDown,
   ChevronRight,
   LogOut,
-  CheckCircle2,
   RotateCcw,
-  XCircle,
   Phone,
   Mail,
   ChevronLeft,
@@ -29,6 +27,7 @@ import {
   Tv,
   PlaneTakeoff,
   PlaneLanding,
+  AlertTriangle,
 } from "lucide-react";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
@@ -229,6 +228,13 @@ export default function AdminFlightManagement() {
   // bookings, so there's nothing to group.
   const groupByAgent = isAdminLike || user?.role === "team_leader";
 
+  // Primary top-level navigation — Updates (reschedule/cancellation, any
+  // date), Arrivals/Departures (today), Unregistered (no matched GDX
+  // booking, see the isUnregistered() helper below). Layered on top of the
+  // existing Type/Airline/Team/Agent/date filters rather than replacing
+  // them — a tab narrows to a category, the filters below still narrow
+  // further within it.
+  const [viewTab, setViewTab] = useState("updates");
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [airlineFilter, setAirlineFilter] = useState("all");
@@ -458,7 +464,30 @@ export default function AdminFlightManagement() {
     [accessScoped, gdxByBookingRef, teamFilter, agentPrimaryTeam]
   );
 
-  const filtered = useMemo(() => {
+  const todayKey = useMemo(() => todayDateKey(), []);
+  const yesterdayKey = useMemo(() => yesterdayDateKey(), []);
+
+  // No GDX resolved for this booking_ref — either the booking_ref never
+  // matched a real Fusioo ticket at all (a needs_attention/unclassified
+  // placeholder row, or a genuine PNR Fusioo just doesn't have on file), or
+  // it matched a ticket with no linked GDX booking. Either way, nobody's
+  // been assigned to it yet — see the "Unregistered Flights" tab below.
+  const isUnregistered = (r) => !gdxByBookingRef[r.booking_ref]?.gdx;
+
+  function matchesView(r, tab) {
+    if (tab === "updates") return r.email_type === "reschedule" || r.email_type === "cancellation";
+    if (tab === "arrivals") return getPrimaryArrivalDate(r) === todayKey;
+    if (tab === "departures") return getPrimaryDepartureDate(r) === todayKey;
+    if (tab === "unregistered") return isUnregistered(r);
+    return true;
+  }
+
+  // Every filter EXCEPT the primary tab — used both to build `filtered`
+  // below (tab applied on top) and to compute each tab's own count (each
+  // tab needs to reflect the other active filters without being narrowed by
+  // whichever tab happens to be selected right now, or every inactive tab's
+  // count would silently read 0).
+  const preTabFiltered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return accessScoped.filter((r) => {
       const departureDate = getPrimaryDepartureDate(r);
@@ -492,15 +521,17 @@ export default function AdminFlightManagement() {
     });
   }, [accessScoped, search, typeFilter, airlineFilter, teamFilter, agentFilter, dateFrom, dateTo, gdxByBookingRef, agentPrimaryTeam]);
 
+  const filtered = useMemo(
+    () => preTabFiltered.filter((r) => matchesView(r, viewTab)),
+    [preTabFiltered, viewTab, todayKey]
+  );
+
   // Reset both tables back to page 1 whenever a filter changes — otherwise a
   // narrower filter could leave the view stranded on a now-nonexistent page.
   useEffect(() => {
     setPage(1);
     setArchivePage(1);
-  }, [search, typeFilter, airlineFilter, teamFilter, agentFilter, dateFrom, dateTo]);
-
-  const todayKey = useMemo(() => todayDateKey(), []);
-  const yesterdayKey = useMemo(() => yesterdayDateKey(), []);
+  }, [search, typeFilter, airlineFilter, teamFilter, agentFilter, dateFrom, dateTo, viewTab]);
 
   // Split into upcoming (today or later, or no date at all — we can't tell
   // if an undated record is past or future, so default to keeping it
@@ -543,22 +574,19 @@ export default function AdminFlightManagement() {
   const archivePageItems = archived.slice((archivePageSafe - 1) * PAGE_SIZE, archivePageSafe * PAGE_SIZE);
   const archiveRange = paginationRange(archivePageSafe, PAGE_SIZE, archived.length);
 
-  // Sourced from `filtered` (RBAC + the active search/type/airline/team/
-  // agent/date-range filters), not the broader `accessScoped` — these cards
-  // sit right above a table titled "Flight Emails (N)" that reflects those
-  // same filters, so a filtered-out row must not still count in the totals
-  // above it (e.g. Type=Cancellation showing a table of only cancellations
-  // while "Confirmations"/"Reschedules" still displayed unfiltered numbers).
+  // Sourced from `preTabFiltered` (RBAC + every active filter EXCEPT the tab
+  // itself) — each tab's own count must reflect the other active filters
+  // without being narrowed by whichever tab happens to be selected right
+  // now, or every inactive tab's card would read 0 the moment you clicked
+  // onto a different one.
   const stats = useMemo(
     () => ({
-      total: filtered.length,
-      confirmation: filtered.filter((r) => r.email_type === "confirmation").length,
-      reschedule: filtered.filter((r) => r.email_type === "reschedule").length,
-      cancellation: filtered.filter((r) => r.email_type === "cancellation").length,
-      departingToday: filtered.filter((r) => getPrimaryDepartureDate(r) === todayKey).length,
-      arrivingToday: filtered.filter((r) => getPrimaryArrivalDate(r) === todayKey).length,
+      updates: preTabFiltered.filter((r) => matchesView(r, "updates")).length,
+      arrivals: preTabFiltered.filter((r) => matchesView(r, "arrivals")).length,
+      departures: preTabFiltered.filter((r) => matchesView(r, "departures")).length,
+      unregistered: preTabFiltered.filter((r) => matchesView(r, "unregistered")).length,
     }),
-    [filtered, todayKey]
+    [preTabFiltered, todayKey]
   );
 
   // Team Leader lookup (team_name -> leader's full_name), sourced from
@@ -641,13 +669,43 @@ export default function AdminFlightManagement() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-            <StatCard label="Total Flights" value={stats.total} icon={Plane} />
-            <StatCard label="Confirmations" value={stats.confirmation} icon={CheckCircle2} accent="text-emerald-600" iconBg="bg-emerald-50" />
-            <StatCard label="Reschedules" value={stats.reschedule} icon={RotateCcw} accent="text-orange-600" iconBg="bg-orange-50" />
-            <StatCard label="Cancellations" value={stats.cancellation} icon={XCircle} accent="text-red-600" iconBg="bg-red-50" />
-            <StatCard label="Departing Today" value={stats.departingToday} icon={PlaneTakeoff} accent="text-blue-600" iconBg="bg-blue-50" />
-            <StatCard label="Arriving Today" value={stats.arrivingToday} icon={PlaneLanding} accent="text-purple-600" iconBg="bg-purple-50" />
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <ViewTabCard
+              label="Flight Updates"
+              sublabel="Reschedules & cancellations"
+              value={stats.updates}
+              icon={RotateCcw}
+              accent="orange"
+              active={viewTab === "updates"}
+              onClick={() => setViewTab("updates")}
+            />
+            <ViewTabCard
+              label="Arrivals Today"
+              sublabel="Landing today"
+              value={stats.arrivals}
+              icon={PlaneLanding}
+              accent="purple"
+              active={viewTab === "arrivals"}
+              onClick={() => setViewTab("arrivals")}
+            />
+            <ViewTabCard
+              label="Departures Today"
+              sublabel="Taking off today"
+              value={stats.departures}
+              icon={PlaneTakeoff}
+              accent="blue"
+              active={viewTab === "departures"}
+              onClick={() => setViewTab("departures")}
+            />
+            <ViewTabCard
+              label="Unregistered Flights"
+              sublabel="No GDX booking matched"
+              value={stats.unregistered}
+              icon={AlertTriangle}
+              accent="amber"
+              active={viewTab === "unregistered"}
+              onClick={() => setViewTab("unregistered")}
+            />
           </div>
 
           <Card className="border-0 shadow-sm">
@@ -1050,6 +1108,12 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
                   </div>
                 ))}
               </div>
+              {r.body && (
+                <div className="mt-3 p-3 rounded-lg bg-background border">
+                  <p className="text-xs font-semibold text-muted-foreground mb-1.5">Email Body</p>
+                  <p className="text-xs whitespace-pre-wrap max-h-64 overflow-y-auto font-mono text-slate-700">{r.body}</p>
+                </div>
+              )}
               <p className="text-[11px] text-muted-foreground mt-3">
                 Gmail message ID: <span className="font-mono">{r.gmail_message_id}</span>
               </p>
@@ -1106,19 +1170,36 @@ function PaginationBar({ range, total, page, pageCount, onPrev, onNext }) {
   );
 }
 
-function StatCard({ label, value, icon: Icon, accent = "text-orange-600", iconBg = "bg-orange-50" }) {
+// Primary top-level navigation, styled like a stat card but clickable — see
+// viewTab in the main component for what each of the 4 tabs filters to.
+const VIEW_TAB_THEME = {
+  orange: { iconBg: "bg-orange-50", icon: "text-orange-600", activeBorder: "border-orange-300", activeBg: "bg-orange-50/60" },
+  purple: { iconBg: "bg-purple-50", icon: "text-purple-600", activeBorder: "border-purple-300", activeBg: "bg-purple-50/60" },
+  blue: { iconBg: "bg-blue-50", icon: "text-blue-600", activeBorder: "border-blue-300", activeBg: "bg-blue-50/60" },
+  amber: { iconBg: "bg-amber-50", icon: "text-amber-600", activeBorder: "border-amber-300", activeBg: "bg-amber-50/60" },
+};
+
+function ViewTabCard({ label, sublabel, value, icon: Icon, accent, active, onClick }) {
+  const theme = VIEW_TAB_THEME[accent];
   return (
-    <Card className="border-0 shadow-sm">
-      <CardContent className="p-5 flex items-center gap-4">
-        <div className={cn("w-11 h-11 rounded-xl flex items-center justify-center shrink-0", iconBg)}>
-          <Icon className={cn("w-5 h-5", accent)} />
-        </div>
-        <div className="min-w-0">
-          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{label}</p>
-          <p className={cn("text-2xl font-display font-bold leading-tight tabular-nums", accent)}>{value}</p>
-        </div>
-      </CardContent>
-    </Card>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "text-left rounded-xl border bg-card p-5 flex items-center gap-4 transition-colors",
+        active ? cn(theme.activeBorder, theme.activeBg, "shadow-sm") : "border-transparent shadow-sm hover:bg-muted/40"
+      )}
+    >
+      <div className={cn("w-11 h-11 rounded-xl flex items-center justify-center shrink-0", theme.iconBg)}>
+        <Icon className={cn("w-5 h-5", theme.icon)} />
+      </div>
+      <div className="min-w-0">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{label}</p>
+        <p className={cn("text-2xl font-display font-bold leading-tight tabular-nums", theme.icon)}>{value}</p>
+        <p className="text-[11px] text-muted-foreground truncate">{sublabel}</p>
+      </div>
+    </button>
   );
 }
 
