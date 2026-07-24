@@ -1,6 +1,9 @@
 import React from 'react';
+import { useAuth } from '@/lib/AuthContext';
 
 const UserNotRegisteredError = () => {
+  const { logout } = useAuth();
+
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-b from-white to-slate-50">
       <div className="max-w-md w-full p-8 bg-white rounded-lg shadow-lg border border-slate-100">
@@ -22,6 +25,13 @@ const UserNotRegisteredError = () => {
               <li>Try logging out and back in again</li>
             </ul>
           </div>
+          <button
+            type="button"
+            onClick={() => logout(true)}
+            className="mt-6 w-full h-11 rounded-md bg-orange-600 text-white font-medium hover:bg-orange-700 transition-colors"
+          >
+            Log out
+          </button>
         </div>
       </div>
     </div>

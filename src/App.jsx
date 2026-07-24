@@ -30,15 +30,28 @@ function FlightTrackerAuthGuard() {
 
 const FLIGHT_TRACKER_PREFIX = '/admin';
 
+// This app has its own custom-built login/register/password-recovery pages
+// (below) using base44.auth.loginViaEmailPassword/etc. directly — they must
+// always be reachable, even when the auth gate below would otherwise fire
+// (e.g. an expired token sets authError.type = 'auth_required' the moment a
+// signed-out user's browser re-checks auth state). Without this exclusion,
+// visiting /login while unauthenticated — the single most common reason
+// someone would ever land there — got intercepted by the gate and hard-
+// redirected to base44's own hosted login page instead, making these four
+// custom pages effectively unreachable.
+const PUBLIC_AUTH_ROUTES = ['/login', '/register', '/forgot-password', '/reset-password'];
+
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
   const location = useLocation();
   const isFlightTrackerRoute = location.pathname.startsWith(FLIGHT_TRACKER_PREFIX);
+  const isPublicAuthRoute = PUBLIC_AUTH_ROUTES.includes(location.pathname);
 
   // Flight Tracker/Accounts pages use their own login (employeeaccount table,
   // see FlightTrackerAuthGuard above) and must not be blocked by base44's
-  // platform-level auth gate below — skip straight to the route table.
-  if (!isFlightTrackerRoute && (isLoadingPublicSettings || isLoadingAuth)) {
+  // platform-level auth gate below — skip straight to the route table. Same
+  // for this app's own auth pages, see PUBLIC_AUTH_ROUTES above.
+  if (!isFlightTrackerRoute && !isPublicAuthRoute && (isLoadingPublicSettings || isLoadingAuth)) {
     return (
       <div className="fixed inset-0 flex items-center justify-center">
         <div className="w-8 h-8 border-4 border-orange-200 border-t-orange-600 rounded-full animate-spin"></div>
@@ -46,13 +59,24 @@ const AuthenticatedApp = () => {
     );
   }
 
-  if (!isFlightTrackerRoute && authError) {
+  if (!isFlightTrackerRoute && !isPublicAuthRoute && authError) {
     if (authError.type === 'user_not_registered') {
       return <UserNotRegisteredError />;
     } else if (authError.type === 'auth_required') {
       navigateToLogin();
       return null;
     }
+    // Any other authError.type (an unrecognized server-provided reason, or
+    // 'unknown' from a network/500 failure fetching public settings — see
+    // AuthContext.jsx's checkAppState) previously fell through to rendering
+    // <Routes> below as if nothing were wrong, silently hiding a real outage
+    // behind what looks like normal operation.
+    return (
+      <div className="fixed inset-0 flex flex-col items-center justify-center gap-3 text-center px-4">
+        <p className="text-lg font-semibold text-slate-900">Something went wrong loading this app.</p>
+        <p className="text-sm text-muted-foreground max-w-sm">{authError.message || "Please try refreshing the page."}</p>
+      </div>
+    );
   }
 
   return (
