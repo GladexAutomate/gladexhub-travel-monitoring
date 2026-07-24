@@ -8,7 +8,7 @@ const NAV_ITEMS = [
 ];
 
 export default function FlightTrackerSidebar({ active }) {
-  const { user, logout } = useAuth();
+  const { user, logout, isAdminLike } = useAuth();
   const navigate = useNavigate();
 
   const handleLogout = () => {
@@ -32,12 +32,14 @@ export default function FlightTrackerSidebar({ active }) {
         </div>
       </div>
 
-      <div className="p-3">
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400">
-          <ShieldAlert className="w-4 h-4 shrink-0" />
-          <span className="text-xs font-bold tracking-wide">ADMIN VIEW</span>
+      {isAdminLike && (
+        <div className="p-3">
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400">
+            <ShieldAlert className="w-4 h-4 shrink-0" />
+            <span className="text-xs font-bold tracking-wide">ADMIN VIEW</span>
+          </div>
         </div>
-      </div>
+      )}
 
       <nav className="flex-1 p-3 space-y-1">
         {items.map((item) => {

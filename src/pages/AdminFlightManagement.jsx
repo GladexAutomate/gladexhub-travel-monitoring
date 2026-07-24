@@ -42,15 +42,6 @@ const ROLE_LABELS = {
 
 const PAGE_SIZE = 50;
 
-// Why a flight email's booking_ref did/didn't resolve to an internal GDX
-// booking — developer-only diagnostics, shown in the expanded row detail.
-const DEBUG_REASON_LABELS = {
-  OK: "Matched — GDX booking found.",
-  NO_TICKET: "Walang ticket_details_b1d64ca0 row para sa booking ref na ito (hindi pa naka-encode sa internal system).",
-  NO_BOOKING_LINK: "May ticket_details row, pero blangko ang booking_transactions link nito (hindi pa na-connect sa isang GDX booking).",
-  BROKEN_LINK: "May booking_transactions value, pero walang tumugmang record sa bookings_6fbdd6b2 (record_id o gdx) — malamang mali o luma ang reference.",
-};
-
 const TYPE_STYLES = {
   confirmation: { label: "Confirmation", className: "bg-emerald-100 text-emerald-700 border-emerald-200" },
   reschedule: { label: "Reschedule", className: "bg-orange-100 text-orange-700 border-orange-200" },
@@ -340,13 +331,6 @@ export default function AdminFlightManagement() {
       tickets.forEach((t) => {
         const bookingId = (t.booking_transactions || [])[0] || null;
         const booking = bookingId ? bookingsById[bookingId] : null;
-        // developer-only diagnostics for why a booking_ref did or didn't
-        // resolve to a GDX record — see the debug reason labels below.
-        const debug = {
-          reason: !bookingId ? "NO_BOOKING_LINK" : !booking ? "BROKEN_LINK" : "OK",
-          rawBookingTransactions: bookingId,
-          bookingRecordId: booking?.id ?? null,
-        };
         const candidate = {
           gdx: booking?.gdx ?? null,
           clientName: booking?.lead_name || t.customer_last_name || null,
@@ -354,7 +338,6 @@ export default function AdminFlightManagement() {
           email: booking?.email_1 || null,
           teamName: (booking?.agent_name || [])[0] || null,
           agentName: (booking?.name_of_agent || [])[0] || null,
-          debug,
         };
         const existing = lookup[t.booking_reference_number_pnr];
         // More than one ticket row can share the same PNR (duplicate
@@ -367,9 +350,8 @@ export default function AdminFlightManagement() {
       });
 
       // booking_refs with no ticket row at all never enter the loop above,
-      // so they'd otherwise be missing from the lookup entirely (which is
-      // fine for the "—" display, but leaves developer diagnostics with
-      // nothing to point to). Fill those in explicitly.
+      // so they'd otherwise be missing from the lookup entirely. Fill those
+      // in explicitly so they still render as "—" instead of being skipped.
       const ticketedRefs = new Set(tickets.map((t) => t.booking_reference_number_pnr));
       bookingRefs.forEach((ref) => {
         if (!ticketedRefs.has(ref) && !lookup[ref]) {
@@ -380,7 +362,6 @@ export default function AdminFlightManagement() {
             email: null,
             teamName: null,
             agentName: null,
-            debug: { reason: "NO_TICKET", rawBookingTransactions: null, bookingRecordId: null },
           };
         }
       });
@@ -467,12 +448,15 @@ export default function AdminFlightManagement() {
   const todayKey = useMemo(() => todayDateKey(), []);
   const yesterdayKey = useMemo(() => yesterdayDateKey(), []);
 
-  // No GDX resolved for this booking_ref — either the booking_ref never
-  // matched a real Fusioo ticket at all (a needs_attention/unclassified
-  // placeholder row, or a genuine PNR Fusioo just doesn't have on file), or
-  // it matched a ticket with no linked GDX booking. Either way, nobody's
-  // been assigned to it yet — see the "Unregistered Flights" tab below.
-  const isUnregistered = (r) => !gdxByBookingRef[r.booking_ref]?.gdx;
+  // No GDX resolved for this booking_ref — either it matched a real Fusioo
+  // ticket with no linked GDX booking, or it's a genuine PNR Fusioo doesn't
+  // have on file. needs_attention rows are explicitly excluded: their
+  // booking_ref is a raw email subject line (see saveNeedsAttentionRow_ in
+  // Code.gs), never a real airline PNR, so they can NEVER resolve to a GDX —
+  // counting them here isn't "no agent assigned yet", it's just "this email
+  // couldn't be parsed/classified", a different problem that inflated this
+  // tab to 20,000+ rows before this fix.
+  const isUnregistered = (r) => r.email_type !== "needs_attention" && !gdxByBookingRef[r.booking_ref]?.gdx;
 
   function matchesView(r, tab) {
     if (tab === "updates") return r.email_type === "reschedule" || r.email_type === "cancellation";
@@ -631,7 +615,7 @@ export default function AdminFlightManagement() {
     <div className="min-h-screen flex bg-background">
       <FlightTrackerSidebar active="emails" />
 
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0">
         <header className="md:hidden sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="p-1.5 bg-gradient-to-br from-orange-500 to-amber-400 rounded-lg">
@@ -639,9 +623,11 @@ export default function AdminFlightManagement() {
             </div>
             <p className="font-display font-bold text-sm">Flight Tracker</p>
           </div>
-          <span className="flex items-center gap-1 px-2 py-1 rounded-md bg-red-100 text-red-700 text-[10px] font-bold">
-            <ShieldAlert className="w-3 h-3" /> ADMIN VIEW
-          </span>
+          {isAdminLike && (
+            <span className="flex items-center gap-1 px-2 py-1 rounded-md bg-red-100 text-red-700 text-[10px] font-bold">
+              <ShieldAlert className="w-3 h-3" /> ADMIN VIEW
+            </span>
+          )}
         </header>
 
         <main className="flex-1 p-4 md:p-8 overflow-auto space-y-6 max-w-7xl w-full mx-auto">
@@ -853,7 +839,6 @@ export default function AdminFlightManagement() {
                         isAdminLike={isAdminLike}
                         teamLeaderByTeam={teamLeaderByTeam}
                         agentPrimaryTeam={agentPrimaryTeam}
-                        showDebugInfo={user?.role === "super_admin"}
                       />
                     )}
                   </TableBody>
@@ -914,7 +899,6 @@ export default function AdminFlightManagement() {
                           isAdminLike={isAdminLike}
                           teamLeaderByTeam={teamLeaderByTeam}
                           agentPrimaryTeam={agentPrimaryTeam}
-                          showDebugInfo={user?.role === "super_admin"}
                         />
                       )}
                     </TableBody>
@@ -991,7 +975,7 @@ function groupLabelFor(dateKey, todayKey, yesterdayKey) {
   return formatDate(dateKey, "EEEE, MMM d, yyyy");
 }
 
-function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByDate, todayKey, yesterdayKey, groupByAgent, isAdminLike, teamLeaderByTeam, agentPrimaryTeam, showDebugInfo }) {
+function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByDate, todayKey, yesterdayKey, groupByAgent, isAdminLike, teamLeaderByTeam, agentPrimaryTeam }) {
   let lastDateKey;
   let isFirstDateGroup = true;
   const colSpanCount = 10;
@@ -1046,7 +1030,9 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
             {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
           </TableCell>
           <TableCell className="font-medium text-sm">{r.airline || "—"}</TableCell>
-          <TableCell className="font-mono text-sm">{r.booking_ref || "—"}</TableCell>
+          <TableCell className="font-mono text-sm max-w-[220px]">
+            <div className="truncate" title={r.booking_ref || undefined}>{r.booking_ref || "—"}</div>
+          </TableCell>
           <TableCell className="font-mono text-sm">{gdxInfo?.gdx || "—"}</TableCell>
           <TableCell className="text-sm max-w-[200px]">
             <div className="truncate">{gdxInfo?.clientName || "—"}</div>
@@ -1147,37 +1133,9 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
                   </div>
                 ))}
               </div>
-              {r.body && (
-                <div className="mt-3 p-3 rounded-lg bg-background border">
-                  <p className="text-xs font-semibold text-muted-foreground mb-1.5">Email Body</p>
-                  <p className="text-xs whitespace-pre-wrap max-h-64 overflow-y-auto font-mono text-slate-700">{r.body}</p>
-                </div>
-              )}
               <p className="text-[11px] text-muted-foreground mt-3">
                 Gmail message ID: <span className="font-mono">{r.gmail_message_id}</span>
               </p>
-              {showDebugInfo && (
-                <div className="mt-3 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs space-y-1">
-                  <p className="font-semibold text-amber-800">Developer Debug — booking match status</p>
-                  <p>
-                    <span className="text-muted-foreground">Status:</span>{" "}
-                    {DEBUG_REASON_LABELS[gdxInfo?.debug?.reason] || "Unknown — no debug info recorded."}
-                  </p>
-                  {gdxInfo?.debug?.rawBookingTransactions && (
-                    <p>
-                      <span className="text-muted-foreground">ticket_details.booking_transactions:</span>{" "}
-                      <span className="font-mono">{gdxInfo.debug.rawBookingTransactions}</span>
-                      {gdxInfo.debug.matchedVia && ` (matched via ${gdxInfo.debug.matchedVia})`}
-                    </p>
-                  )}
-                  {gdxInfo?.debug?.bookingRecordId && (
-                    <p>
-                      <span className="text-muted-foreground">bookings_6fbdd6b2.record_id:</span>{" "}
-                      <span className="font-mono">{gdxInfo.debug.bookingRecordId}</span>
-                    </p>
-                  )}
-                </div>
-              )}
             </TableCell>
           </TableRow>
         )}
