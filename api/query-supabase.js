@@ -230,12 +230,22 @@ export default async function handler(req, res) {
     const local = createClient(automateUrl, serviceKey);
     const { data: requesterRows, error: requesterError } = await local
       .from('admin_accounts')
-      .select('full_name,role,team_name,role_override,is_active_override,is_active,session_token')
+      .select('full_name,role,team_name,role_override,is_active_override,is_active,session_token,last_login')
       .eq('email', emailLower)
       .limit(1);
     if (requesterError) throw requesterError;
     const requesterRow = requesterRows?.[0];
     if (!requesterRow) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // An account that has never completed a real login (last_login still
+    // null — e.g. an admin pre-assigned it a role before the person's first
+    // sign-in) has never been issued a session_token either, so the check
+    // below would otherwise silently pass for anyone who just knows that
+    // person's email. Closing that requires the row to have logged in at
+    // least once before it can be used here at all.
+    if (!requesterRow.last_login) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
