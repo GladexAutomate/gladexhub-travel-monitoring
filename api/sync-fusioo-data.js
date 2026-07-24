@@ -23,13 +23,57 @@ export const config = { maxDuration: 300 };
 const PAGE_SIZE = 200; // Fusioo's max per the API docs.
 const PAGE_CONCURRENCY = 8;
 
-const FUSIOO_APPS = [
-  { name: 'Booking Transactions', appId: 'i037d30cf902f409f81339ce75c1fa930', table: 'fusioo_booking_transactions' },
-  { name: 'Ticket Details', appId: 'i531ddc66a84a459982555f699d175ca2', table: 'fusioo_ticket_details' },
-  { name: 'Hotel Details', appId: 'ia0bc64962dc04df3b2629f1c9282c99c', table: 'fusioo_hotel_details' },
-  { name: 'Tour Details', appId: 'i0f68b99281d94732b4b0b07ef2d0c134', table: 'fusioo_tour_details' },
-  { name: 'Transfer Details', appId: 'i69059e8c03a04ab489452fa4f6d5ff21', table: 'fusioo_transfer_details' },
+// Each brand is a SEPARATE Fusioo account (its own API token, its own app
+// IDs) — GladExplore confirmed 2026-07-24 via a live API call. All brands
+// still write into the SAME "fusioo" Supabase project, just under
+// brand-prefixed tables (see gladexplore_fusioo_sync_schema.sql), so the
+// dashboard can eventually show/cross-reference all of them from one place.
+// tokenEnv is resolved per-source at request time (see handler below) —
+// falling back to VITE_FUSIOO_TOKEN only for the original 'gladex' source,
+// which predates this multi-source structure and had no brand prefix.
+const FUSIOO_SOURCES = [
+  {
+    source: 'gladex',
+    tokenEnv: 'FUSIOO_ACCESS_TOKEN',
+    tokenFallbackEnv: 'VITE_FUSIOO_TOKEN',
+    apps: [
+      { name: 'Booking Transactions', appId: 'i037d30cf902f409f81339ce75c1fa930', table: 'fusioo_booking_transactions' },
+      { name: 'Ticket Details', appId: 'i531ddc66a84a459982555f699d175ca2', table: 'fusioo_ticket_details' },
+      { name: 'Hotel Details', appId: 'ia0bc64962dc04df3b2629f1c9282c99c', table: 'fusioo_hotel_details' },
+      { name: 'Tour Details', appId: 'i0f68b99281d94732b4b0b07ef2d0c134', table: 'fusioo_tour_details' },
+      { name: 'Transfer Details', appId: 'i69059e8c03a04ab489452fa4f6d5ff21', table: 'fusioo_transfer_details' },
+    ],
+  },
+  {
+    source: 'gladexplore',
+    tokenEnv: 'GLADEXPLORE_FUSIOO_ACCESS_TOKEN',
+    apps: [
+      { name: 'Booking Transactions', appId: 'i389d269e665d40ac83db8a65a429a6ec', table: 'gladexplore_booking_transactions' },
+      { name: 'Ticket Details', appId: 'i4cf087422dd949e5aa9f83b4732656f8', table: 'gladexplore_ticket_details' },
+      { name: 'Transfer Details', appId: 'i7822b525967642ec9d2df2d933ea56a2', table: 'gladexplore_transfer_details' },
+      { name: 'Name of Airline', appId: 'id4454e501fd640579a7613ccf9251bda', table: 'gladexplore_name_of_airline' },
+    ],
+  },
 ];
+
+// Flattened view of every app across every source, each carrying its own
+// resolved token — this is what the sync loop below actually iterates.
+// Built once per request (not module-level) since it reads process.env.
+function resolveFusiooApps() {
+  const apps = [];
+  const missingTokenSources = [];
+  for (const src of FUSIOO_SOURCES) {
+    const token = process.env[src.tokenEnv] || (src.tokenFallbackEnv ? process.env[src.tokenFallbackEnv] : undefined);
+    if (!token) {
+      missingTokenSources.push(src.source);
+      continue; // that source's apps just don't run this cycle, rather than failing every OTHER source's sync too
+    }
+    for (const app of src.apps) {
+      apps.push({ ...app, source: src.source, token });
+    }
+  }
+  return { apps, missingTokenSources };
+}
 
 async function fetchFusiooPage(appId, offset, token) {
   const url = `https://api.fusioo.com/v3/records/apps/${appId}?limit=${PAGE_SIZE}&offset=${offset}`;
@@ -76,12 +120,16 @@ export default async function handler(req, res) {
   }
 
   try {
-    const fusiooToken = process.env.FUSIOO_ACCESS_TOKEN || process.env.VITE_FUSIOO_TOKEN;
     const supabaseUrl = process.env.VITE_FUSIOO_SUPABASE_URL;
     const supabaseKey = process.env.FUSIOO_SUPABASE_SERVICE_ROLE_KEY;
 
-    if (!fusiooToken || !supabaseUrl || !supabaseKey) {
-      return res.status(500).json({ error: 'Server configuration error: missing FUSIOO_ACCESS_TOKEN, VITE_FUSIOO_SUPABASE_URL, or FUSIOO_SUPABASE_SERVICE_ROLE_KEY' });
+    if (!supabaseUrl || !supabaseKey) {
+      return res.status(500).json({ error: 'Server configuration error: missing VITE_FUSIOO_SUPABASE_URL or FUSIOO_SUPABASE_SERVICE_ROLE_KEY' });
+    }
+
+    const { apps: allApps, missingTokenSources } = resolveFusiooApps();
+    if (allApps.length === 0) {
+      return res.status(500).json({ error: 'Server configuration error: no Fusioo source has a token configured', missingTokenSources });
     }
 
     // Vercel Cron triggers are always a plain GET with no body — apps must
@@ -90,14 +138,14 @@ export default async function handler(req, res) {
     // for manual/local testing).
     const requestedApps = req.body?.apps || (typeof req.query?.apps === 'string' ? req.query.apps.split(',') : undefined);
     const appsToSync = Array.isArray(requestedApps) && requestedApps.length > 0
-      ? FUSIOO_APPS.filter((a) => requestedApps.includes(a.table))
-      : FUSIOO_APPS;
+      ? allApps.filter((a) => requestedApps.includes(a.table))
+      : allApps;
 
     const supabase = createClient(supabaseUrl, supabaseKey);
     const results = [];
 
     for (const app of appsToSync) {
-      const rawRecords = await fetchAllFusiooRecords(app.appId, fusiooToken);
+      const rawRecords = await fetchAllFusiooRecords(app.appId, app.token);
 
       // BUG FOUND on a live full-run test: concurrent pagination can return
       // the same record twice (Fusioo's offset pagination isn't guaranteed
@@ -121,10 +169,10 @@ export default async function handler(req, res) {
         if (error) throw new Error(`Supabase upsert error for ${app.table}: ${error.message}`);
       }
 
-      results.push({ app: app.name, table: app.table, synced: records.length });
+      results.push({ source: app.source, app: app.name, table: app.table, synced: records.length });
     }
 
-    return res.status(200).json({ results });
+    return res.status(200).json({ results, skippedSources: missingTokenSources });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

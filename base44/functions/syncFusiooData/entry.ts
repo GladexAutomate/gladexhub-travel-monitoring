@@ -12,13 +12,54 @@ import { createClient } from 'npm:@supabase/supabase-js@2.109.0';
 const PAGE_SIZE = 200; // Fusioo's max per the API docs.
 const PAGE_CONCURRENCY = 8;
 
-const FUSIOO_APPS = [
-  { name: 'Booking Transactions', appId: 'i037d30cf902f409f81339ce75c1fa930', table: 'fusioo_booking_transactions' },
-  { name: 'Ticket Details', appId: 'i531ddc66a84a459982555f699d175ca2', table: 'fusioo_ticket_details' },
-  { name: 'Hotel Details', appId: 'ia0bc64962dc04df3b2629f1c9282c99c', table: 'fusioo_hotel_details' },
-  { name: 'Tour Details', appId: 'i0f68b99281d94732b4b0b07ef2d0c134', table: 'fusioo_tour_details' },
-  { name: 'Transfer Details', appId: 'i69059e8c03a04ab489452fa4f6d5ff21', table: 'fusioo_transfer_details' },
+// Each brand is a SEPARATE Fusioo account (its own API token, its own app
+// IDs) — GladExplore confirmed 2026-07-24 via a live API call. All brands
+// still write into the SAME "fusioo" Supabase project, just under
+// brand-prefixed tables (see gladexplore_fusioo_sync_schema.sql). Ported
+// from api/sync-fusioo-data.js's same multi-source structure.
+const FUSIOO_SOURCES = [
+  {
+    source: 'gladex',
+    tokenEnv: 'FUSIOO_ACCESS_TOKEN',
+    tokenFallbackEnv: 'VITE_FUSIOO_TOKEN',
+    apps: [
+      { name: 'Booking Transactions', appId: 'i037d30cf902f409f81339ce75c1fa930', table: 'fusioo_booking_transactions' },
+      { name: 'Ticket Details', appId: 'i531ddc66a84a459982555f699d175ca2', table: 'fusioo_ticket_details' },
+      { name: 'Hotel Details', appId: 'ia0bc64962dc04df3b2629f1c9282c99c', table: 'fusioo_hotel_details' },
+      { name: 'Tour Details', appId: 'i0f68b99281d94732b4b0b07ef2d0c134', table: 'fusioo_tour_details' },
+      { name: 'Transfer Details', appId: 'i69059e8c03a04ab489452fa4f6d5ff21', table: 'fusioo_transfer_details' },
+    ],
+  },
+  {
+    source: 'gladexplore',
+    tokenEnv: 'GLADEXPLORE_FUSIOO_ACCESS_TOKEN',
+    apps: [
+      { name: 'Booking Transactions', appId: 'i389d269e665d40ac83db8a65a429a6ec', table: 'gladexplore_booking_transactions' },
+      { name: 'Ticket Details', appId: 'i4cf087422dd949e5aa9f83b4732656f8', table: 'gladexplore_ticket_details' },
+      { name: 'Transfer Details', appId: 'i7822b525967642ec9d2df2d933ea56a2', table: 'gladexplore_transfer_details' },
+      { name: 'Name of Airline', appId: 'id4454e501fd640579a7613ccf9251bda', table: 'gladexplore_name_of_airline' },
+    ],
+  },
 ];
+
+// Flattened view of every app across every source, each carrying its own
+// resolved token. Built at request time (not module scope) since it reads
+// env vars.
+function resolveFusiooApps() {
+  const apps = [];
+  const missingTokenSources = [];
+  for (const src of FUSIOO_SOURCES) {
+    const token = Deno.env.get(src.tokenEnv) || (src.tokenFallbackEnv ? Deno.env.get(src.tokenFallbackEnv) : undefined);
+    if (!token) {
+      missingTokenSources.push(src.source);
+      continue;
+    }
+    for (const app of src.apps) {
+      apps.push({ ...app, source: src.source, token });
+    }
+  }
+  return { apps, missingTokenSources };
+}
 
 async function fetchFusiooPage(appId, offset, token) {
   const url = `https://api.fusioo.com/v3/records/apps/${appId}?limit=${PAGE_SIZE}&offset=${offset}`;
@@ -61,13 +102,12 @@ async function fetchAllFusiooRecords(appId, token) {
 
 Deno.serve(async (req) => {
   try {
-    const fusiooToken = Deno.env.get('FUSIOO_ACCESS_TOKEN') || Deno.env.get('VITE_FUSIOO_TOKEN');
     const supabaseUrl = Deno.env.get('VITE_FUSIOO_SUPABASE_URL');
     const supabaseKey = Deno.env.get('FUSIOO_SUPABASE_SERVICE_ROLE_KEY');
 
-    if (!fusiooToken || !supabaseUrl || !supabaseKey) {
+    if (!supabaseUrl || !supabaseKey) {
       return Response.json(
-        { error: 'Server configuration error: missing FUSIOO_ACCESS_TOKEN, VITE_FUSIOO_SUPABASE_URL, or FUSIOO_SUPABASE_SERVICE_ROLE_KEY' },
+        { error: 'Server configuration error: missing VITE_FUSIOO_SUPABASE_URL or FUSIOO_SUPABASE_SERVICE_ROLE_KEY' },
         { status: 500 }
       );
     }
@@ -93,16 +133,24 @@ Deno.serve(async (req) => {
       return Response.json({ error: 'Forbidden' }, { status: 403 });
     }
 
+    const { apps: allApps, missingTokenSources } = resolveFusiooApps();
+    if (allApps.length === 0) {
+      return Response.json(
+        { error: 'Server configuration error: no Fusioo source has a token configured', missingTokenSources },
+        { status: 500 }
+      );
+    }
+
     const requestedApps = body?.apps;
     const appsToSync = Array.isArray(requestedApps) && requestedApps.length > 0
-      ? FUSIOO_APPS.filter((a) => requestedApps.includes(a.table))
-      : FUSIOO_APPS;
+      ? allApps.filter((a) => requestedApps.includes(a.table))
+      : allApps;
 
     const supabase = createClient(supabaseUrl, supabaseKey);
     const results = [];
 
     for (const app of appsToSync) {
-      const rawRecords = await fetchAllFusiooRecords(app.appId, fusiooToken);
+      const rawRecords = await fetchAllFusiooRecords(app.appId, app.token);
 
       // Concurrent pagination can return the same record twice (Fusioo's
       // offset pagination isn't guaranteed stable across simultaneous
@@ -120,10 +168,10 @@ Deno.serve(async (req) => {
         if (error) throw new Error(`Supabase upsert error for ${app.table}: ${error.message}`);
       }
 
-      results.push({ app: app.name, table: app.table, synced: records.length });
+      results.push({ source: app.source, app: app.name, table: app.table, synced: records.length });
     }
 
-    return Response.json({ results });
+    return Response.json({ results, skippedSources: missingTokenSources });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }
