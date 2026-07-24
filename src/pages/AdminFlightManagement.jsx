@@ -1091,6 +1091,38 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
                   )}
                 </div>
               )}
+              <div className="mb-3 p-3 rounded-lg bg-background border">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <span className="text-xs font-semibold text-muted-foreground">Notice Summary</span>
+                  <span className="text-[11px] text-muted-foreground">{formatDate(r.received_date, "MMM d, yyyy h:mm a")}</span>
+                </div>
+                <div className="flex items-center gap-2 mb-2">
+                  <TypeBadge type={r.email_type} />
+                  <span className="font-mono text-sm">{r.booking_ref || "—"}</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-xs">
+                  <div>
+                    <p className="text-muted-foreground">Airline</p>
+                    <p className="font-medium">{r.airline || "—"}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Route</p>
+                    <p className="font-medium">
+                      {legs.length ? legs.map((l) => l.route || `${l.origin || "?"}-${l.destination || "?"}`).join(", ") : "—"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Passengers</p>
+                    <p className="font-medium">N/A</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Flight Date(s)</p>
+                    <p className="font-medium">
+                      {legs.length ? legs.map((l) => formatDate(l.departure_date)).join(", ") : "—"}
+                    </p>
+                  </div>
+                </div>
+              </div>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {legs.length === 0 && (
                   <p className="text-sm text-muted-foreground">No flight leg details available.</p>

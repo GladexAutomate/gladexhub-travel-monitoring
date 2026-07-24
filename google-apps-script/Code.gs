@@ -1925,10 +1925,15 @@ function resetProcessedForOngoingBookings() {
   // fetch to return everything, since a live check against the real table
   // came back with exactly 1000 (i.e. more rows almost certainly exist
   // past that page).
+  // encodeURIComponent on the or= value: UrlFetchApp (unlike a browser fetch)
+  // rejects raw ">" in a URL with "Invalid argument", and the PostgREST
+  // ->>  JSON-path operator below has two of them — found live when
+  // resetProcessedForOngoingBookings threw exactly that on its first real run.
+  const orValue = '(flights->0->>departure_date.gte.' + cutoffKey + ',flights->0->>departure_date.is.null)';
   const baseUrl = supabaseUrl.replace(/\/$/, '') +
     '/rest/v1/flight_emails?select=gmail_message_id' +
     '&body=is.null' +
-    '&or=(flights->0->>departure_date.gte.' + cutoffKey + ',flights->0->>departure_date.is.null)';
+    '&or=' + encodeURIComponent(orValue);
   const pageSize = 1000;
   const rows = [];
   let from = 0;
@@ -2000,4 +2005,116 @@ function resetProcessedForOngoingBookings() {
   // needed. It already runs automatically every 5 minutes; no extra step
   // required beyond this function.
   Logger.log('The next scheduled fetchNewEmails run (every 5 minutes) will reprocess these — body will be captured this time. No manual step needed beyond this function.');
+}
+
+/**
+ * BUG FOUND live: resetProcessedForOngoingBookings above relies on the next
+ * fetchNewEmails run to reprocess a reset thread through the normal
+ * processMessage_ pipeline — but processMessage_ checks isNoisySubject_
+ * FIRST and returns 'noise' immediately (no saveToSupabase_ call at all,
+ * see processMessage_ above) for any subject matching NOISE_SUBJECT_SUBSTRINGS.
+ * A live check found 3,557 of the 3,756 stuck rows are email_type
+ * 'needs_attention' — saved back when a subject wasn't recognized as noise
+ * yet (the noise list was added in the same batch of work as the body
+ * field). On reprocess, many of those SAME subjects now match the noise
+ * list and get skipped before ever reaching the code that would save a
+ * body — so resetting the Gmail label and waiting for fetchNewEmails can
+ * NEVER backfill these specific rows, no matter how many times it's rerun.
+ *
+ * This function sidesteps the whole classify/noise pipeline: it fetches
+ * each stuck row's message directly from Gmail by gmail_message_id and
+ * PATCHes just the `body` column in Supabase — no reclassification, no
+ * label changes, so it can't be short-circuited by a noise/classification
+ * check the way reprocessing can.
+ */
+function backfillBodyForOngoingBookings() {
+  const props = PropertiesService.getScriptProperties();
+  const supabaseUrl = props.getProperty('SUPABASE_URL');
+  const supabaseKey = props.getProperty('SUPABASE_KEY');
+  if (!supabaseUrl || !supabaseKey) {
+    Logger.log('ERROR: Set SUPABASE_URL and SUPABASE_KEY in Project Settings > Script Properties before running.');
+    return;
+  }
+
+  const ARCHIVE_AFTER_DAYS = 3; // must match AdminFlightManagement.jsx's own constant
+  const cutoffKey = dateNDaysAgo_(ARCHIVE_AFTER_DAYS).replace(/\//g, '-');
+  const orValue = '(flights->0->>departure_date.gte.' + cutoffKey + ',flights->0->>departure_date.is.null)';
+  const baseUrl = supabaseUrl.replace(/\/$/, '') +
+    '/rest/v1/flight_emails?select=gmail_message_id' +
+    '&body=is.null' +
+    '&or=' + encodeURIComponent(orValue);
+  const pageSize = 1000;
+  const rows = [];
+  let from = 0;
+  while (true) {
+    const response = UrlFetchApp.fetch(baseUrl, {
+      headers: {
+        apikey: supabaseKey,
+        Authorization: 'Bearer ' + supabaseKey,
+        Range: from + '-' + (from + pageSize - 1),
+      },
+      muteHttpExceptions: true,
+    });
+    const code = response.getResponseCode();
+    if (code !== 200 && code !== 206) {
+      Logger.log('ERROR fetching ongoing bookings from Supabase (' + code + '): ' + response.getContentText());
+      return;
+    }
+    const page = JSON.parse(response.getContentText());
+    rows.push.apply(rows, page);
+    if (page.length < pageSize) break;
+    from += pageSize;
+  }
+
+  const messageIds = Array.from(new Set(rows.map(function (r) { return r.gmail_message_id; }).filter(Boolean)));
+  Logger.log('Found ' + messageIds.length + ' ongoing booking email(s) with no body yet.');
+  if (messageIds.length === 0) return;
+
+  const startTime = Date.now();
+  let updated = 0, missing = 0, failed = 0, stoppedEarly = false;
+  for (let i = 0; i < messageIds.length; i++) {
+    if (Date.now() - startTime > CONFIG.MAX_RUNTIME_MS) {
+      stoppedEarly = true;
+      break;
+    }
+    const id = messageIds[i];
+    try {
+      const message = GmailApp.getMessageById(id);
+      if (!message) {
+        missing++;
+        continue;
+      }
+      const patchUrl = supabaseUrl.replace(/\/$/, '') +
+        '/rest/v1/flight_emails?gmail_message_id=eq.' + encodeURIComponent(id);
+      const response = UrlFetchApp.fetch(patchUrl, {
+        method: 'patch',
+        contentType: 'application/json',
+        headers: {
+          apikey: supabaseKey,
+          Authorization: 'Bearer ' + supabaseKey,
+          Prefer: 'return=minimal',
+          'User-Agent': 'GladexTours-FlightSync/1.0 (Google Apps Script; server-side)',
+        },
+        payload: JSON.stringify({ body: truncateBody_(message.getPlainBody()) }),
+        muteHttpExceptions: true,
+      });
+      const code = response.getResponseCode();
+      if (code >= 200 && code < 300) {
+        updated++;
+      } else {
+        failed++;
+        Logger.log('Could not update body for ' + id + ' (' + code + '): ' + response.getContentText());
+      }
+    } catch (err) {
+      failed++;
+      Logger.log('Could not backfill body for ' + id + ': ' + err);
+    }
+  }
+  Logger.log(
+    'Updated body for ' + updated + ' row(s), ' + missing + ' Gmail message(s) no longer exist, ' +
+    failed + ' failed, out of ' + messageIds.length + ' found.'
+  );
+  if (stoppedEarly) {
+    Logger.log('Stopped early to avoid the execution time limit — run this function again to continue with the rest.');
+  }
 }
