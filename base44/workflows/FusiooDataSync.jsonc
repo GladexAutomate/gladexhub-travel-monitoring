@@ -14,7 +14,9 @@
           "call": "invoke_backend_function",
           "with": {
             "function_name": "syncFusiooData",
-            "args": {}
+            "args": {
+              "sync_secret": "1a1394c19a2b2792aa011df7f922fb5cd179f4971b3aae49931c5cbf51bd3990"
+            }
           },
           "then": "end",
           "x-base44": {
