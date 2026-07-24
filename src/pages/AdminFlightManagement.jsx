@@ -1107,6 +1107,14 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
                       {legs.length ? legs.map((l) => formatDate(l.departure_date)).join(", ") : "—"}
                     </p>
                   </div>
+                  <div>
+                    <p className="text-muted-foreground">GDX</p>
+                    <p className="font-medium">{gdxInfo?.gdx || "—"}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Agent</p>
+                    <p className="font-medium">{agentKey}</p>
+                  </div>
                 </div>
               </div>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
