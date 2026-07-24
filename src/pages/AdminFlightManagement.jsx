@@ -1077,7 +1077,7 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
                   )}
                 </div>
               )}
-              <div className="mb-3 p-3 rounded-lg bg-background border">
+              <div className="mb-3 p-3 rounded-lg bg-background border max-w-2xl">
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <span className="text-xs font-semibold text-muted-foreground">Notice Summary</span>
                   <span className="text-[11px] text-muted-foreground">{formatDate(r.received_date, "MMM d, yyyy h:mm a")}</span>
@@ -1086,7 +1086,7 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
                   <TypeBadge type={r.email_type} />
                   <span className="font-mono text-sm">{r.booking_ref || "—"}</span>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-xs">
+                <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
                   <div>
                     <p className="text-muted-foreground">Airline</p>
                     <p className="font-medium">{r.airline || "—"}</p>
@@ -1098,8 +1098,8 @@ function FlightRows({ rows, expandedId, setExpandedId, gdxByBookingRef, groupByD
                     </p>
                   </div>
                   <div>
-                    <p className="text-muted-foreground">Passengers</p>
-                    <p className="font-medium">N/A</p>
+                    <p className="text-muted-foreground">Client</p>
+                    <p className="font-medium">{gdxInfo?.clientName || "—"}</p>
                   </div>
                   <div>
                     <p className="text-muted-foreground">Flight Date(s)</p>
